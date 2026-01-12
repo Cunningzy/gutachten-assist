@@ -143,14 +143,14 @@ const GutachtenWorkflowComponent: React.FC = () => {
     if (!file) return;
 
     // Validate file type
-    const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/m4a', 'audio/x-m4a', 'audio/mp4'];
-    const validExtensions = ['.wav', '.mp3', '.webm', '.ogg', '.m4a', '.mp4'];
+    const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/m4a', 'audio/x-m4a', 'audio/mp4', 'audio/flac', 'audio/x-flac'];
+    const validExtensions = ['.wav', '.mp3', '.webm', '.ogg', '.m4a', '.mp4', '.flac'];
     const hasValidExtension = validExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
 
     if (!validTypes.includes(file.type) && !hasValidExtension) {
       setState(prev => ({
         ...prev,
-        error: 'Ungültiges Dateiformat. Unterstützte Formate: WAV, MP3, WebM, OGG, M4A'
+        error: 'Ungültiges Dateiformat. Unterstützte Formate: WAV, MP3, WebM, OGG, M4A, FLAC'
       }));
       return;
     }
@@ -495,12 +495,12 @@ const GutachtenWorkflowComponent: React.FC = () => {
                     Audio-Datei hochladen
                   </p>
                   <p style={{ marginTop: '4px', color: '#94a3b8', fontSize: '12px' }}>
-                    WAV, MP3, WebM, M4A
+                    WAV, MP3, FLAC, WebM, M4A
                   </p>
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a,.mp4"
+                    accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a,.mp4,.flac"
                     onChange={handleFileUpload}
                     style={{ display: 'none' }}
                   />
