@@ -1,0 +1,197 @@
+/* App.css - Main Application Styles */
+/* Gutachten Assistant - German Medical Documentation Tool */
+/* Following PROJECT_STANDARDS.md - Component 2.1A Development */
+
+/* Base App Container */
+.App {
+  min-height: 100vh;
+  background-color: #f9fafb;
+}
+
+/* Medical Theme Utilities - Following README.md professional design */
+.medical-card {
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.1), 0 2px 4px -1px rgba(14, 165, 233, 0.06);
+  border: 1px solid #e5e7eb;
+  padding: 24px;
+  transition: all 0.2s ease-in-out;
+}
+
+.medical-card:hover {
+  box-shadow: 0 10px 15px -3px rgba(14, 165, 233, 0.1), 0 4px 6px -2px rgba(14, 165, 233, 0.05);
+}
+
+/* Medical Buttons - Professional medical styling */
+.medical-button {
+  background: #0ea5e9;
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  border: none;
+  font-weight: 600;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+  display: inline-block;
+  text-decoration: none;
+  text-align: center;
+}
+
+.medical-button:hover {
+  background: #0284c7;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.3);
+}
+
+.medical-button:active {
+  transform: translateY(0);
+}
+
+.medical-button:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Medical Button Outline Variant */
+.medical-button-outline {
+  background: transparent;
+  color: #0ea5e9;
+  border: 2px solid #0ea5e9;
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-weight: 600;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+  display: inline-block;
+  text-decoration: none;
+}
+
+.medical-button-outline:hover {
+  background: #0ea5e9;
+  color: white;
+  transform: translateY(-1px);
+}
+
+/* Status Indicators - For Component Testing */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.status-active {
+  background-color: #22c55e;
+  animation: pulse-soft 2s infinite;
+}
+
+.status-processing {
+  background-color: #f59e0b;
+  animation: pulse 1.5s infinite;
+}
+
+.status-error {
+  background-color: #ef4444;
+}
+
+.status-completed {
+  background-color: #3b82f6;
+}
+
+/* Loading Spinner - For Component 2.1A Audio Testing */
+.spinner {
+  border: 2px solid #f3f4f6;
+  border-top: 2px solid #0ea5e9;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* Animations */
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Form Elements - For future components */
+.form-input {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  font-size: 14px;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+}
+
+.form-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+.form-error {
+  font-size: 12px;
+  color: #ef4444;
+  margin-top: 4px;
+}
+
+/* Audio Component Specific - Ready for Component 2.1A */
+.audio-visualizer {
+  background: linear-gradient(90deg, #0ea5e9, #06b6d4);
+  height: 4px;
+  border-radius: 2px;
+  transition: all 0.1s ease-in-out;
+}
+
+/* Medical Theme Utilities */
+.text-medical {
+  color: #0369a1;
+}
+
+.bg-medical-gradient {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0369a1 100%);
+}
+
+.border-medical {
+  border-color: #0ea5e9;
+}
+
+/* Responsive Design - WCAG 2.1 AA Compliance */
+@media (max-width: 768px) {
+  .medical-card {
+    padding: 16px;
+  }
+  
+  .medical-button {
+    padding: 10px 20px;
+    font-size: 14px;
+  }
+}
+
+/* Print Styles - For future document export */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gutachten Assistant - Step 1 Test</title>
+    <style>
+      body { 
+        font-family: system-ui, sans-serif; 
+        margin: 0; 
+        padding: 20px; 
+        background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+        min-height: 100vh;
+      }
+      .container { max-width: 800px; margin: 0 auto; }
+      .card { 
+        background: white; 
+        padding: 20px; 
+        border-radius: 12px; 
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+        margin: 20px 0; 
+      }
+      .success { border-left: 4px solid #22c55e; }
+      .error { border-left: 4px solid #ef4444; }
+      .warning { border-left: 4px solid #f59e0b; }
+      .info { border-left: 4px solid #3b82f6; }
+      button { 
+        background: #3b82f6; 
+        color: white; 
+        padding: 12px 24px; 
+        border: none; 
+        border-radius: 8px; 
+        cursor: pointer; 
+        font-weight: 500;
+        transition: background 0.2s;
+      }
+      button:hover { background: #2563eb; }
+      .logo { 
+        width: 64px; 
+        height: 64px; 
+        background: #0ea5e9; 
+        border-radius: 50%; 
+        display: flex; 
+        align-items: center; 
+        justify-content: center; 
+        margin: 0 auto 20px; 
+      }
+      h1 { color: #1e40af; margin-bottom: 10px; }
+      h2 { color: #1e40af; margin-bottom: 15px; }
+      p { color: #64748b; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

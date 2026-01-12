@@ -1,0 +1,63 @@
+? Step-by-Step Functioning of This Project (for Claude Code)
+This is how the entire Whisper transcription project works:
+
+?? 1. Environment Setup (One Time Per Machine)
+    1. Install Python 3.10 or 3.11
+
+    2. Install Git for Windows
+
+    3. Install FFmpeg and add to PATH (C:\ffmpeg\bin)
+
+Create a virtual environment:
+
+ python -m venv whisper-env
+whisper-env\Scripts\activate
+    4. 
+Install all required packages:
+
+ pip install -r requirements.txt
+    5. 
+
+? 2. How Transcription Works
+When whisper_transcribe.py is run:
+    1. It loads the base Whisper model locally using PyTorch.
+
+It reads a German .flac audio file from:
+
+ C:\Users\kalin\Documents\Dict\untitled.flac
+    2. 
+    3. Whisper decodes the audio using FFmpeg and converts it to a Mel spectrogram.
+
+    4. It transcribes the audio into text using the neural network.
+
+    5. The result is:
+
+        ? Printed in the terminal
+
+Saved as a Word file:
+
+ C:\Users\kalin\Documents\Transcription.docx
+        ? 
+
+? 3. Claude Code Can Use It Like This
+Claude Code can:
+    • Monitor the Dict folder for new .flac files.
+
+    • Trigger python whisper_transcribe.py when a file is added.
+
+    • Read the .docx output file and perform further actions.
+
+    • Alternatively, integrate Whisper as a callable Python module.
+
+
+? Folder Structure
+C:\Users\kalin\
+??? whisper-env\                # Python virtual environment
+??? whisper_transcribe.py       # Main transcription script
+??? requirements.txt            # Dependency list
+??? README.md                   # Stack and usage doc
+??? Documents\
+?   ??? Dict\
+?   ?   ??? untitled.flac       # Input audio file
+?   ??? Transcription.docx      # Output
+

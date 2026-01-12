@@ -1,0 +1,102 @@
+use crate::services::llama_service::{LlamaService, GrammarCorrectionRequest, GrammarCorrectionResponse};
+use anyhow::Result;
+use serde_json::Value;
+use std::sync::Arc;
+use tauri::{Manager, State};
+use tokio::sync::Mutex;
+
+// Global Llama service state
+type LlamaServiceState = Arc<Mutex<LlamaService>>;
+
+#[tauri::command]
+pub async fn download_llama_model(
+    app_handle: tauri::AppHandle,
+    llama_service: State<'_, LlamaServiceState>,
+) -> Result<Value, String> {
+    println!("Starting Llama 3.1 8B model download...");
+
+    // Get models directory
+    let models_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?
+        .join("models");
+
+    let mut service = llama_service.lock().await;
+
+    service
+        .download_model(models_dir)
+        .await
+        .map_err(|e| format!("Failed to download model: {}", e))?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "message": "Llama 3.1 8B model downloaded successfully"
+    }))
+}
+
+#[tauri::command]
+pub async fn load_llama_model(
+    llama_service: State<'_, LlamaServiceState>,
+) -> Result<Value, String> {
+    println!("Loading Llama 3.1 8B model into memory...");
+
+    let service = llama_service.lock().await;
+
+    service
+        .load_model()
+        .await
+        .map_err(|e| format!("Failed to load model: {}", e))?;
+
+    Ok(serde_json::json!({
+        "success": true,
+        "message": "Llama 3.1 8B model loaded successfully"
+    }))
+}
+
+#[tauri::command]
+pub async fn correct_german_grammar(
+    text: String,
+    preserve_style: Option<bool>,
+    llama_service: State<'_, LlamaServiceState>,
+) -> Result<GrammarCorrectionResponse, String> {
+    println!("Correcting German grammar for text (length: {})", text.len());
+
+    let request = GrammarCorrectionRequest {
+        text,
+        preserve_style: preserve_style.unwrap_or(true),
+        language: "de".to_string(),
+    };
+
+    let service = llama_service.lock().await;
+
+    service
+        .correct_grammar(request)
+        .await
+        .map_err(|e| format!("Grammar correction failed: {}", e))
+}
+
+#[tauri::command]
+pub async fn get_llama_model_info(
+    llama_service: State<'_, LlamaServiceState>,
+) -> Result<Value, String> {
+    let service = llama_service.lock().await;
+
+    service
+        .get_model_info()
+        .await
+        .map_err(|e| format!("Failed to get model info: {}", e))
+}
+
+#[tauri::command]
+pub async fn is_llama_model_ready(
+    llama_service: State<'_, LlamaServiceState>,
+) -> Result<bool, String> {
+    let service = llama_service.lock().await;
+    Ok(service.is_model_ready().await)
+}
+
+/// Initialize Llama service on app startup
+pub fn create_llama_service() -> LlamaServiceState {
+    Arc::new(Mutex::new(LlamaService::new()))
+}

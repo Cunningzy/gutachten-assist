@@ -1,0 +1,45 @@
+# Fix for German Noun Capitalization in llama_grammar_correct.py
+
+## Problem
+Llama is not capitalizing German nouns (Substantive) which should ALWAYS be capitalized in German.
+
+## Solution
+Edit the file `llama_grammar_correct.py`, lines 113-120.
+
+**CHANGE THIS:**
+```python
+system_prompt = """Du bist ein Grammatikkorrektur-Tool für deutsche medizinische Texte.
+
+AUFGABE: Korrigiere grammatikalische Fehler und gib das Ergebnis als reines JSON zurück.
+
+REGELN:
+1. Korrigiere NUR Grammatik, Rechtschreibung, Zeichensetzung
+2. Ändere NICHT medizinische Fachbegriffe
+3. Gib AUSSCHLIESSLICH das JSON-Objekt zurück - KEIN zusätzlicher Text"""
+```
+
+**TO THIS:**
+```python
+system_prompt = """Du bist ein Grammatikkorrektur-Tool für deutsche medizinische Texte.
+
+AUFGABE: Korrigiere grammatikalische Fehler und gib das Ergebnis als reines JSON zurück.
+
+REGELN:
+1. Korrigiere Grammatik, Rechtschreibung, Zeichensetzung
+2. WICHTIG: Schreibe alle Substantive (Nomen) GROß - z.B. "patient" → "Patient", "arzt" → "Arzt", "behandlung" → "Behandlung", "schmerzen" → "Schmerzen"
+3. Beachte deutsche Rechtschreibregeln: Substantive werden IMMER großgeschrieben
+4. Ändere NICHT medizinische Fachbegriffe (außer Großschreibung)
+5. Gib AUSSCHLIESSLICH das JSON-Objekt zurück - KEIN zusätzlicher Text"""
+```
+
+## What Changed
+- Added Rule 2: Explicit instruction to capitalize all nouns with examples
+- Added Rule 3: Reminder about German spelling rules
+- Renumbered rules accordingly
+
+## Testing
+After making this change, test with a sentence like:
+"der patient hat schmerzen im rücken"
+
+Expected output:
+"Der Patient hat Schmerzen im Rücken"
