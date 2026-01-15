@@ -46,7 +46,13 @@ async fn main() {
             commands::create_styled_docx,
             commands::detect_formatting_request,
             commands::format_docx_with_request,
-            commands::format_docx_with_spec
+            commands::format_docx_with_spec,
+            // Style Profile commands
+            commands::analyze_example_documents,
+            commands::load_style_profile,
+            commands::get_style_profile_status,
+            commands::clear_style_profile,
+            commands::get_style_profile_prompt
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

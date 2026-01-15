@@ -110,30 +110,47 @@ interface FormatSpec {
   styles?: Record<string, { font?: { name?: string; size_pt?: number; bold?: boolean } }>;
 }
 
-// Medical typist prompt for Llama formatting
-const FORMATTING_PROMPT = `You are a medical typist and language corrector specialized in German medical documents for the Deutsche Rentenversicherung Rheinland.
+// Base medical typist prompt for Llama formatting
+const BASE_FORMATTING_PROMPT = `Du bist ein medizinischer Schreibassistent für deutsche Gutachten der Deutschen Rentenversicherung.
 
-Your task is to transform raw plain text into a fully corrected, coherent, and formally structured medical text, following the style of neurological Gutachten (medical reports for pension applications).
+DEINE AUFGABE:
+Transformiere den Roh-Diktattext in ein korrekt formatiertes medizinisches Gutachten.
 
-Input:
-You will receive raw plain text of a German Gutachten. The text might contain dictation artifacts (e.g. "Punkt Absatz", repetitions, broken grammar, ASR noise, missing punctuation, etc.).
+REGELN:
+1. Korrigiere Grammatik, Rechtschreibung und Interpunktion
+2. Entferne Diktier-Artefakte ("Punkt", "Komma", "Absatz", "neue Zeile")
+3. Behalte ALLE medizinischen Informationen - nichts weglassen!
+4. Strukturiere den Text mit den erkannten Abschnitts-Überschriften
+5. Verwende formellen, sachlichen medizinischen Ton
 
-Output format:
-- Clean, grammatically correct, and stylistically appropriate standard German
-- Medical tone (neutral, objective, formal)
-- Structure the text with section headers as they appear in the input
+FORMATIERUNG:
+- Überschriften als reiner Text (KEINE Sonderzeichen wie ** oder #)
+- Keine Markdown-Formatierung
+- Keine HTML-Tags
+- Keine Kommentare oder Erklärungen
 
-Additional rules:
-- Remove phrases like "Punkt", "Absatz", "Komma" or other speech markers
-- Combine repetitive or fragmented sentences
-- Do NOT omit any medical information unless explicitly instructed
-- Preserve and integrate all provided content, even if initially incoherent — correct it, don't skip it
-- Keep section headers as plain text without any special formatting markers
-
-IMPORTANT: Output ONLY the corrected German medical text. Do not include any explanations, comments, or meta-text. Do not add markdown formatting like ** or __.
-
-Input text:
 `;
+
+// Function to build the full formatting prompt with StyleProfile
+const buildFormattingPrompt = (styleProfilePrompt: string | null): string => {
+  let prompt = BASE_FORMATTING_PROMPT;
+
+  if (styleProfilePrompt) {
+    prompt += `
+DEIN GELERNTER STIL:
+${styleProfilePrompt}
+
+WICHTIG: Formatiere den Text EXAKT nach dem oben beschriebenen Stil-Profil!
+Verwende die gleiche Abschnitts-Struktur und ähnliche Formulierungen.
+
+`;
+  }
+
+  prompt += `Eingabetext:
+`;
+
+  return prompt;
+};
 
 const GutachtenWorkflowComponent: React.FC = () => {
   const [state, setState] = useState<WorkflowState>({
@@ -160,6 +177,8 @@ const GutachtenWorkflowComponent: React.FC = () => {
   const [pendingFormatSpec, setPendingFormatSpec] = useState<FormatSpec | null>(null);
   const [dictationHistory, setDictationHistory] = useState<DictationRecord[]>([]);
   const [currentDictationId, setCurrentDictationId] = useState<string | null>(null);
+  const [styleProfilePrompt, setStyleProfilePrompt] = useState<string | null>(null);
+  const [styleProfileLoaded, setStyleProfileLoaded] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -171,6 +190,23 @@ const GutachtenWorkflowComponent: React.FC = () => {
   // Load style info from example documents on mount
   useEffect(() => {
     loadStyleFromExamples();
+  }, []);
+
+  // Load StyleProfile prompt on mount
+  useEffect(() => {
+    const loadStyleProfile = async () => {
+      try {
+        const prompt = await invoke('get_style_profile_prompt') as string;
+        if (prompt) {
+          setStyleProfilePrompt(prompt);
+          console.log('StyleProfile loaded successfully');
+        }
+      } catch (err) {
+        console.log('No StyleProfile found (this is normal for new users):', err);
+      }
+      setStyleProfileLoaded(true);
+    };
+    loadStyleProfile();
   }, []);
 
   // Load dictation history on mount
@@ -286,12 +322,19 @@ const GutachtenWorkflowComponent: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Format raw transcript using Llama
+  // Format raw transcript using Llama with StyleProfile
   const formatWithLlama = async (rawText: string): Promise<string> => {
-    setProcessingProgress('Text wird formatiert und korrigiert...');
+    if (styleProfilePrompt) {
+      setProcessingProgress('Text wird nach Ihrem Stil formatiert...');
+    } else {
+      setProcessingProgress('Text wird formatiert und korrigiert...');
+    }
 
     try {
-      const prompt = FORMATTING_PROMPT + rawText;
+      // Build prompt with StyleProfile if available
+      const prompt = buildFormattingPrompt(styleProfilePrompt) + rawText;
+
+      console.log('Formatting with StyleProfile:', styleProfilePrompt ? 'YES' : 'NO');
 
       const result = await invoke('correct_german_grammar', {
         text: prompt,
@@ -339,7 +382,12 @@ const GutachtenWorkflowComponent: React.FC = () => {
   };
 
   // Specialized prompt for editing formatted Gutachten
-  const buildRevisionPrompt = (currentText: string, userInstructions: string) => `Bearbeite dieses deutsche medizinische Gutachten nach den Anweisungen des Benutzers.
+  const buildRevisionPrompt = (currentText: string, userInstructions: string) => {
+    // Check if user mentions examples/Beispiel - if so, include StyleProfile
+    const mentionsExample = /beispiel|vorlage|muster|stil|struktur|wie\s+in/i.test(userInstructions);
+    const includeStyleProfile = mentionsExample && styleProfilePrompt;
+
+    let prompt = `Bearbeite dieses deutsche medizinische Gutachten nach den Anweisungen des Benutzers.
 
 STRENGE REGELN - UNBEDINGT BEFOLGEN:
 
@@ -361,7 +409,18 @@ WAS DU NICHT ÄNDERN KANNST (wird beim Word-Export gemacht):
 - Titelseite mit Seitenumbruch
 
 Wenn der Benutzer "Titelseite" oder "Titel" sagt: Setze den relevanten Text an den Anfang des Dokuments auf eigenen Zeilen.
+`;
 
+    if (includeStyleProfile) {
+      prompt += `
+DEIN GELERNTER STIL (aus den Beispiel-Gutachten):
+${styleProfilePrompt}
+
+WICHTIG: Strukturiere den Text EXAKT nach diesem Stil-Profil!
+`;
+    }
+
+    prompt += `
 AKTUELLER TEXT:
 ${currentText}
 
@@ -369,6 +428,9 @@ ANWEISUNGEN:
 ${userInstructions}
 
 Gib jetzt den vollständigen, bearbeiteten Text aus (ohne Formatierungszeichen):`;
+
+    return prompt;
+  };
 
   // Generate FormatSpec from natural language using LLM
   const generateFormatSpec = async (request: string): Promise<FormatSpec | null> => {

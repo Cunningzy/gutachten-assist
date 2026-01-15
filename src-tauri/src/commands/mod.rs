@@ -7,6 +7,7 @@ pub mod document_commands;
 pub mod llama_commands;
 pub mod docx_commands;
 pub mod format_commands;
+pub mod style_profile_commands;
 
 
 // Re-export all commands for easy access in main.rs
@@ -17,3 +18,4 @@ pub use document_commands::*;
 pub use llama_commands::*;
 pub use docx_commands::*;
 pub use format_commands::*;
+pub use style_profile_commands::*;
