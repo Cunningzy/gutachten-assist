@@ -21,6 +21,7 @@ async fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(memory_manager)
         .invoke_handler(tauri::generate_handler![
             system_info,
@@ -41,7 +42,11 @@ async fn main() {
             commands::load_llama_model,
             commands::correct_german_grammar,
             commands::get_llama_model_info,
-            commands::is_llama_model_ready
+            commands::is_llama_model_ready,
+            commands::create_styled_docx,
+            commands::detect_formatting_request,
+            commands::format_docx_with_request,
+            commands::format_docx_with_spec
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

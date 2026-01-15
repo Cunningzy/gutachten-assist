@@ -1,38 +1,274 @@
 /**
  * Unified Gutachten Workflow Component
- * Complete pipeline: Record → Transcribe → Correct → Save
+ * Complete pipeline: Record → Transcribe (hidden) → Format with LLM → Download DOCX
+ * No preview - directly saves formatted document
  */
 
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { LlamaService } from '../../services/llamaService';
+import { getExampleDocuments } from '../Onboarding/FirstLaunchOnboarding';
 
 interface WorkflowState {
-  step: 'ready' | 'recording' | 'transcribing' | 'correcting' | 'done';
+  step: 'ready' | 'recording' | 'processing' | 'done';
   audioBlob: Blob | null;
-  rawTranscript: string;
-  correctedText: string;
+  formattedText: string;
   error: string | null;
 }
+
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}
+
+interface StyleInfo {
+  fontFamily: string;
+  fontSize: number;
+  lineSpacing: number;
+  hasExamples: boolean;
+  headerContent: string;  // Document header (repeated text at top of every page)
+}
+
+interface DictationRecord {
+  id: string;
+  text: string;
+  title: string;  // First 50 chars or auto-generated
+  createdAt: string;  // ISO date string
+  lastModifiedAt: string;
+  chatMessages: ChatMessage[];
+  formatSpec: FormatSpec | null;
+}
+
+const DICTATION_STORAGE_KEY = 'gutachten_dictation_history';
+const MAX_DICTATIONS = 3;
+
+// Helper functions for dictation storage
+const loadDictationHistory = (): DictationRecord[] => {
+  try {
+    const stored = localStorage.getItem(DICTATION_STORAGE_KEY);
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (e) {
+    console.error('Failed to load dictation history:', e);
+  }
+  return [];
+};
+
+const saveDictationHistory = (history: DictationRecord[]) => {
+  try {
+    localStorage.setItem(DICTATION_STORAGE_KEY, JSON.stringify(history));
+  } catch (e) {
+    console.error('Failed to save dictation history:', e);
+  }
+};
+
+const generateDictationTitle = (text: string): string => {
+  // Try to extract a meaningful title from the first line or first 50 chars
+  const firstLine = text.split('\n')[0].trim();
+  if (firstLine.length > 0 && firstLine.length <= 60) {
+    return firstLine;
+  }
+  const preview = text.substring(0, 50).trim();
+  return preview.length < text.length ? preview + '...' : preview;
+};
+
+interface FormatSpec {
+  // Pending formatting changes to apply when saving DOCX
+  header?: {
+    enabled?: boolean;
+    content?: {
+      center_text?: string;
+      left_text?: string;
+      right_text?: string;
+      font?: { name?: string; size_pt?: number };
+    };
+  };
+  footer?: {
+    enabled?: boolean;
+    page_number?: {
+      enabled?: boolean;
+      format?: string;
+      position?: string;
+    };
+  };
+  page?: {
+    margins?: { top_mm?: number; bottom_mm?: number; left_mm?: number; right_mm?: number };
+    size?: string;
+  };
+  title_page?: {
+    enabled?: boolean;
+    title_text?: string;
+    subtitle_text?: string;
+    title_font?: { name?: string; size_pt?: number; bold?: boolean };
+    add_page_break_after?: boolean;
+  };
+  defaults?: {
+    font?: { name?: string; size_pt?: number; bold?: boolean };
+    paragraph?: { line_spacing?: number; space_after_pt?: number };
+  };
+  styles?: Record<string, { font?: { name?: string; size_pt?: number; bold?: boolean } }>;
+}
+
+// Medical typist prompt for Llama formatting
+const FORMATTING_PROMPT = `You are a medical typist and language corrector specialized in German medical documents for the Deutsche Rentenversicherung Rheinland.
+
+Your task is to transform raw plain text into a fully corrected, coherent, and formally structured medical text, following the style of neurological Gutachten (medical reports for pension applications).
+
+Input:
+You will receive raw plain text of a German Gutachten. The text might contain dictation artifacts (e.g. "Punkt Absatz", repetitions, broken grammar, ASR noise, missing punctuation, etc.).
+
+Output format:
+- Clean, grammatically correct, and stylistically appropriate standard German
+- Medical tone (neutral, objective, formal)
+- Structure the text with section headers as they appear in the input
+
+Additional rules:
+- Remove phrases like "Punkt", "Absatz", "Komma" or other speech markers
+- Combine repetitive or fragmented sentences
+- Do NOT omit any medical information unless explicitly instructed
+- Preserve and integrate all provided content, even if initially incoherent — correct it, don't skip it
+- Keep section headers as plain text without any special formatting markers
+
+IMPORTANT: Output ONLY the corrected German medical text. Do not include any explanations, comments, or meta-text. Do not add markdown formatting like ** or __.
+
+Input text:
+`;
 
 const GutachtenWorkflowComponent: React.FC = () => {
   const [state, setState] = useState<WorkflowState>({
     step: 'ready',
     audioBlob: null,
-    rawTranscript: '',
-    correctedText: '',
+    formattedText: '',
     error: null
   });
 
   const [recordingTime, setRecordingTime] = useState(0);
   const [processingProgress, setProcessingProgress] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
-  const [editText, setEditText] = useState('');
+  const [styleInfo, setStyleInfo] = useState<StyleInfo>({
+    fontFamily: 'Times New Roman',
+    fontSize: 12,
+    lineSpacing: 1.5,
+    hasExamples: false,
+    headerContent: ''
+  });
+  const [showStyleUpload, setShowStyleUpload] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [revisionInput, setRevisionInput] = useState('');
+  const [isRevising, setIsRevising] = useState(false);
+  const [pendingFormatSpec, setPendingFormatSpec] = useState<FormatSpec | null>(null);
+  const [dictationHistory, setDictationHistory] = useState<DictationRecord[]>([]);
+  const [currentDictationId, setCurrentDictationId] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const styleInputRef = useRef<HTMLInputElement>(null);
+
+  // Load style info from example documents on mount
+  useEffect(() => {
+    loadStyleFromExamples();
+  }, []);
+
+  // Load dictation history on mount
+  useEffect(() => {
+    const history = loadDictationHistory();
+    setDictationHistory(history);
+  }, []);
+
+  // Save current dictation to history
+  const saveCurrentDictation = (text: string, isNew: boolean = false) => {
+    const now = new Date().toISOString();
+
+    if (isNew || !currentDictationId) {
+      // Create new dictation record
+      const newId = `dictation_${Date.now()}`;
+      const newRecord: DictationRecord = {
+        id: newId,
+        text: text,
+        title: generateDictationTitle(text),
+        createdAt: now,
+        lastModifiedAt: now,
+        chatMessages: chatMessages,
+        formatSpec: pendingFormatSpec
+      };
+
+      // Add to history, keeping only last MAX_DICTATIONS
+      const updatedHistory = [newRecord, ...dictationHistory].slice(0, MAX_DICTATIONS);
+      setDictationHistory(updatedHistory);
+      saveDictationHistory(updatedHistory);
+      setCurrentDictationId(newId);
+    } else {
+      // Update existing dictation
+      const updatedHistory = dictationHistory.map(d =>
+        d.id === currentDictationId
+          ? {
+              ...d,
+              text: text,
+              title: generateDictationTitle(text),
+              lastModifiedAt: now,
+              chatMessages: chatMessages,
+              formatSpec: pendingFormatSpec
+            }
+          : d
+      );
+      setDictationHistory(updatedHistory);
+      saveDictationHistory(updatedHistory);
+    }
+  };
+
+  // Load a dictation from history
+  const loadDictation = (dictation: DictationRecord) => {
+    setState({
+      step: 'done',
+      audioBlob: null,
+      formattedText: dictation.text,
+      error: null
+    });
+    setChatMessages(dictation.chatMessages || []);
+    setPendingFormatSpec(dictation.formatSpec);
+    setCurrentDictationId(dictation.id);
+  };
+
+  // Delete a dictation from history
+  const deleteDictation = (id: string) => {
+    const updatedHistory = dictationHistory.filter(d => d.id !== id);
+    setDictationHistory(updatedHistory);
+    saveDictationHistory(updatedHistory);
+
+    // If we deleted the current dictation, clear it
+    if (currentDictationId === id) {
+      setCurrentDictationId(null);
+    }
+  };
+
+  const loadStyleFromExamples = () => {
+    const examples = getExampleDocuments();
+    const processedExamples = examples.filter(doc => doc.status === 'processed');
+
+    if (processedExamples.length > 0) {
+      try {
+        const savedStyle = localStorage.getItem('gutachten_style_info');
+        if (savedStyle) {
+          const parsed = JSON.parse(savedStyle);
+          setStyleInfo({
+            fontFamily: parsed.fontFamily || 'Times New Roman',
+            fontSize: parsed.fontSize || 12,
+            lineSpacing: parsed.lineSpacing || 1.5,
+            hasExamples: true,
+            headerContent: parsed.headerContent || ''
+          });
+        } else {
+          setStyleInfo(prev => ({ ...prev, hasExamples: true }));
+        }
+      } catch (e) {
+        setStyleInfo(prev => ({ ...prev, hasExamples: true }));
+      }
+    }
+  };
 
   // Cleanup on unmount
   useEffect(() => {
@@ -50,10 +286,270 @@ const GutachtenWorkflowComponent: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Step 1: Start Recording
+  // Format raw transcript using Llama
+  const formatWithLlama = async (rawText: string): Promise<string> => {
+    setProcessingProgress('Text wird formatiert und korrigiert...');
+
+    try {
+      const prompt = FORMATTING_PROMPT + rawText;
+
+      const result = await invoke('correct_german_grammar', {
+        text: prompt,
+        convertDictationCommands: false
+      }) as { corrected_text: string };
+
+      // Strip any markdown formatting that Llama might have added
+      let cleanedText = result.corrected_text || rawText;
+      cleanedText = stripMarkdownFormatting(cleanedText);
+
+      return cleanedText;
+    } catch (error) {
+      console.error('Llama formatting failed:', error);
+      return rawText;
+    }
+  };
+
+  // Strip markdown and HTML formatting from text
+  const stripMarkdownFormatting = (text: string): string => {
+    let cleaned = text;
+
+    // Remove markdown bold/italic: **text**, __text__, *text*, _text_
+    cleaned = cleaned.replace(/\*\*([^*]+)\*\*/g, '$1');
+    cleaned = cleaned.replace(/__([^_]+)__/g, '$1');
+    cleaned = cleaned.replace(/\*([^*]+)\*/g, '$1');
+    cleaned = cleaned.replace(/_([^_]+)_/g, '$1');
+
+    // Remove markdown headers: # ## ### etc.
+    cleaned = cleaned.replace(/^#{1,6}\s+/gm, '');
+
+    // Remove HTML tags
+    cleaned = cleaned.replace(/<[^>]+>/g, '');
+
+    // Remove markdown links: [text](url)
+    cleaned = cleaned.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+
+    // Remove markdown code blocks
+    cleaned = cleaned.replace(/```[^`]*```/g, '');
+    cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+
+    // Clean up extra whitespace
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+
+    return cleaned.trim();
+  };
+
+  // Specialized prompt for editing formatted Gutachten
+  const buildRevisionPrompt = (currentText: string, userInstructions: string) => `Bearbeite dieses deutsche medizinische Gutachten nach den Anweisungen des Benutzers.
+
+STRENGE REGELN - UNBEDINGT BEFOLGEN:
+
+1. Gib NUR reinen Text aus - KEINE Formatierungszeichen!
+2. VERBOTEN: ** # __ <b> <font> <big> oder andere Markup-Zeichen
+3. Überschriften sind normaler Text, z.B.: "IX. Sozialversicherungspflichtige Tätigkeit"
+4. NICHT so: "**IX. Sozialversicherungspflichtige Tätigkeit**"
+5. Keine Erklärungen, keine Kommentare - nur der bearbeitete Text
+
+WAS DU ÄNDERN KANNST:
+- Wörter ersetzen, Text hinzufügen oder entfernen
+- Absätze umformulieren
+- Abschnitte umstrukturieren
+- Informationen ergänzen oder korrigieren
+
+WAS DU NICHT ÄNDERN KANNST (wird beim Word-Export gemacht):
+- Schriftgröße, Fettdruck, Kursiv
+- Seitenkopf (Header) - das ist Word-Formatierung
+- Titelseite mit Seitenumbruch
+
+Wenn der Benutzer "Titelseite" oder "Titel" sagt: Setze den relevanten Text an den Anfang des Dokuments auf eigenen Zeilen.
+
+AKTUELLER TEXT:
+${currentText}
+
+ANWEISUNGEN:
+${userInstructions}
+
+Gib jetzt den vollständigen, bearbeiteten Text aus (ohne Formatierungszeichen):`;
+
+  // Generate FormatSpec from natural language using LLM
+  const generateFormatSpec = async (request: string): Promise<FormatSpec | null> => {
+    try {
+      // Use a prompt to convert natural language to FormatSpec JSON
+      const specPrompt = `Du bist ein Assistent für die Formatierung von Word-Dokumenten.
+Konvertiere die folgende Benutzeranfrage in ein JSON-Objekt.
+
+WICHTIG: Gib NUR gültiges JSON aus. Keine Erklärungen, keine Kommentare, nur JSON.
+
+Verfügbare Optionen im JSON:
+{
+  "header": {
+    "enabled": true/false,
+    "content": { "center_text": "Text", "left_text": "Text", "font": { "size_pt": 10 } }
+  },
+  "footer": {
+    "enabled": true,
+    "page_number": { "enabled": true, "format": "Seite 1 von 3", "position": "center" }
+  },
+  "page": {
+    "margins": { "top_mm": 25, "bottom_mm": 25, "left_mm": 25, "right_mm": 25 }
+  },
+  "title_page": {
+    "enabled": true,
+    "title_text": "Titel",
+    "title_font": { "size_pt": 24, "bold": true },
+    "add_page_break_after": true
+  },
+  "defaults": {
+    "font": { "name": "Arial", "size_pt": 12 }
+  },
+  "styles": {
+    "Heading1": { "font": { "size_pt": 16, "bold": true } }
+  }
+}
+
+Benutzeranfrage: "${request}"
+
+JSON:`;
+
+      const result = await invoke('correct_german_grammar', {
+        text: specPrompt,
+        convertDictationCommands: false
+      }) as { corrected_text: string };
+
+      // Try to extract JSON from the response
+      const jsonMatch = result.corrected_text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]) as FormatSpec;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to generate FormatSpec:', error);
+      return null;
+    }
+  };
+
+  // Handle revision request from user - detects formatting vs text editing
+  const handleRevisionRequest = async () => {
+    if (!revisionInput.trim() || isRevising) return;
+
+    const userMessage = revisionInput.trim();
+    setRevisionInput('');
+    setIsRevising(true);
+
+    // Add user message to chat
+    const newUserMessage: ChatMessage = {
+      role: 'user',
+      content: userMessage,
+      timestamp: new Date()
+    };
+    setChatMessages(prev => [...prev, newUserMessage]);
+
+    try {
+      // First, detect if this is a formatting request
+      const detection = await invoke('detect_formatting_request', {
+        request: userMessage
+      }) as { is_formatting_request: boolean };
+
+      if (detection.is_formatting_request) {
+        // This is a formatting request - generate FormatSpec
+        const newSpec = await generateFormatSpec(userMessage);
+
+        if (newSpec) {
+          // Merge with existing pending spec
+          setPendingFormatSpec(prev => ({
+            ...prev,
+            ...newSpec
+          }));
+
+          // Build description of what will be applied
+          const changes: string[] = [];
+          if (newSpec.header) changes.push('Kopfzeile');
+          if (newSpec.footer) changes.push('Fußzeile/Seitenzahlen');
+          if (newSpec.page?.margins) changes.push('Seitenränder');
+          if (newSpec.title_page) changes.push('Titelseite');
+          if (newSpec.defaults?.font) changes.push('Schriftart');
+          if (newSpec.styles) changes.push('Überschriften-Stil');
+
+          const assistantMessage: ChatMessage = {
+            role: 'assistant',
+            content: `Formatierungsänderungen vorgemerkt: ${changes.join(', ')}. Diese werden beim Speichern als Word-Dokument angewendet. Klicken Sie auf "Als Word speichern" um das formatierte Dokument zu erstellen.`,
+            timestamp: new Date()
+          };
+          setChatMessages(prev => [...prev, assistantMessage]);
+        } else {
+          const assistantMessage: ChatMessage = {
+            role: 'assistant',
+            content: 'Die Formatierungsanfrage konnte nicht verarbeitet werden. Bitte formulieren Sie Ihre Anfrage anders, z.B. "Kopfzeile 10pt" oder "Seitenränder 30mm".',
+            timestamp: new Date()
+          };
+          setChatMessages(prev => [...prev, assistantMessage]);
+        }
+
+      } else {
+        // This is a text editing request - use existing Llama approach
+        const revisionPrompt = buildRevisionPrompt(state.formattedText, userMessage);
+
+        const result = await invoke('correct_german_grammar', {
+          text: revisionPrompt,
+          convertDictationCommands: false
+        }) as { corrected_text: string };
+
+        // Post-process to strip any markdown/HTML that slipped through
+        let revisedText = result.corrected_text || state.formattedText;
+        revisedText = stripMarkdownFormatting(revisedText);
+
+        // Update the formatted text
+        setState(prev => ({ ...prev, formattedText: revisedText }));
+
+        // Add assistant response to chat
+        const assistantMessage: ChatMessage = {
+          role: 'assistant',
+          content: 'Textänderungen wurden übernommen. Sie können das Dokument jetzt speichern oder weitere Änderungen anfordern.',
+          timestamp: new Date()
+        };
+        setChatMessages(prev => [...prev, assistantMessage]);
+
+        // Save changes to history
+        if (currentDictationId) {
+          const now = new Date().toISOString();
+          const updatedHistory = dictationHistory.map(d =>
+            d.id === currentDictationId
+              ? {
+                  ...d,
+                  text: revisedText,
+                  title: generateDictationTitle(revisedText),
+                  lastModifiedAt: now,
+                  chatMessages: [...chatMessages, newUserMessage, assistantMessage],
+                  formatSpec: pendingFormatSpec
+                }
+              : d
+          );
+          setDictationHistory(updatedHistory);
+          saveDictationHistory(updatedHistory);
+        }
+      }
+
+      // Scroll to bottom of chat
+      setTimeout(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+
+    } catch (error) {
+      console.error('Revision failed:', error);
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: `Fehler bei der Überarbeitung: ${error}`,
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+    }
+
+    setIsRevising(false);
+  };
+
+  // Start Recording
   const startRecording = async () => {
     try {
-      setState(prev => ({ ...prev, step: 'recording', error: null, rawTranscript: '', correctedText: '' }));
+      setState(prev => ({ ...prev, step: 'recording', error: null, formattedText: '' }));
       chunksRef.current = [];
       setRecordingTime(0);
 
@@ -83,8 +579,8 @@ const GutachtenWorkflowComponent: React.FC = () => {
     }
   };
 
-  // Step 2: Stop Recording & Start Transcription
-  const stopRecordingAndTranscribe = async () => {
+  // Stop Recording & Process
+  const stopRecordingAndProcess = async () => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -94,45 +590,71 @@ const GutachtenWorkflowComponent: React.FC = () => {
       mediaRecorderRef.current.stop();
     }
 
-    // Wait a moment for chunks to be collected
     await new Promise(resolve => setTimeout(resolve, 500));
 
     const audioBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
-    setState(prev => ({ ...prev, step: 'transcribing', audioBlob }));
-    setProcessingProgress('Audio wird verarbeitet...');
+    setState(prev => ({ ...prev, step: 'processing', audioBlob }));
 
+    await processAudio(audioBlob);
+  };
+
+  // Process audio: Transcribe with Whisper, then format with Llama
+  const processAudio = async (audioBlob: Blob) => {
     try {
-      // Step 1: Convert blob to array and save file (same pattern as SimpleWhisperTest)
+      setProcessingProgress('Schritt 1/2: Sprache wird erkannt...');
+
       const arrayBuffer = await audioBlob.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
-
-      setProcessingProgress('Audio wird gespeichert...');
 
       const filePath = await invoke('save_audio_file', {
         audioData: Array.from(uint8Array),
         filename: `gutachten_${Date.now()}`
       }) as string;
 
-      setProcessingProgress('Whisper analysiert Sprache...');
-
-      // Step 2: Transcribe with Whisper (same as SimpleWhisperTest)
       const result = await invoke('process_audio_file', {
         filePath: filePath
       }) as { text: string };
 
-      const transcript = result.text || '';
-      setState(prev => ({ ...prev, rawTranscript: transcript }));
-      setProcessingProgress('Transkription abgeschlossen!');
+      const rawTranscript = result.text || '';
 
-      // Automatically proceed to correction
-      await correctGrammar(transcript);
+      if (!rawTranscript.trim()) {
+        setState(prev => ({
+          ...prev,
+          step: 'ready',
+          error: 'Keine Sprache erkannt. Bitte erneut versuchen.'
+        }));
+        return;
+      }
+
+      setProcessingProgress('Schritt 2/2: Text wird formatiert...');
+      const formattedText = await formatWithLlama(rawTranscript);
+
+      setState(prev => ({ ...prev, step: 'done', formattedText }));
+      setProcessingProgress('');
+
+      // Save as new dictation
+      const now = new Date().toISOString();
+      const newId = `dictation_${Date.now()}`;
+      const newRecord: DictationRecord = {
+        id: newId,
+        text: formattedText,
+        title: generateDictationTitle(formattedText),
+        createdAt: now,
+        lastModifiedAt: now,
+        chatMessages: [],
+        formatSpec: null
+      };
+      const updatedHistory = [newRecord, ...dictationHistory].slice(0, MAX_DICTATIONS);
+      setDictationHistory(updatedHistory);
+      saveDictationHistory(updatedHistory);
+      setCurrentDictationId(newId);
 
     } catch (error) {
-      console.error('Transcription error:', error);
+      console.error('Processing error:', error);
       setState(prev => ({
         ...prev,
         step: 'ready',
-        error: `Transkription fehlgeschlagen: ${error}`
+        error: `Verarbeitung fehlgeschlagen: ${error}`
       }));
     }
   };
@@ -142,7 +664,6 @@ const GutachtenWorkflowComponent: React.FC = () => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Validate file type
     const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/m4a', 'audio/x-m4a', 'audio/mp4', 'audio/flac', 'audio/x-flac'];
     const validExtensions = ['.wav', '.mp3', '.webm', '.ogg', '.m4a', '.mp4', '.flac'];
     const hasValidExtension = validExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
@@ -155,7 +676,6 @@ const GutachtenWorkflowComponent: React.FC = () => {
       return;
     }
 
-    // Check file size (max 100MB)
     const maxSize = 100 * 1024 * 1024;
     if (file.size > maxSize) {
       setState(prev => ({
@@ -165,128 +685,205 @@ const GutachtenWorkflowComponent: React.FC = () => {
       return;
     }
 
-    setState(prev => ({ ...prev, step: 'transcribing', error: null, rawTranscript: '', correctedText: '' }));
-    setProcessingProgress(`Audio-Datei "${file.name}" wird verarbeitet...`);
+    setState(prev => ({ ...prev, step: 'processing', error: null, formattedText: '' }));
 
     try {
-      // Convert file to array buffer
+      setProcessingProgress(`Schritt 1/2: "${file.name}" wird transkribiert...`);
+
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
 
-      setProcessingProgress('Audio wird gespeichert...');
-
-      // Save file to backend
       const filePath = await invoke('save_audio_file', {
         audioData: Array.from(uint8Array),
         filename: `upload_${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`
       }) as string;
 
-      setProcessingProgress('Whisper analysiert Sprache...');
-
-      // Transcribe with Whisper
       const result = await invoke('process_audio_file', {
         filePath: filePath
       }) as { text: string };
 
-      const transcript = result.text || '';
-      setState(prev => ({ ...prev, rawTranscript: transcript }));
-      setProcessingProgress('Transkription abgeschlossen!');
+      const rawTranscript = result.text || '';
 
-      // Automatically proceed to correction
-      await correctGrammar(transcript);
+      if (!rawTranscript.trim()) {
+        setState(prev => ({
+          ...prev,
+          step: 'ready',
+          error: 'Keine Sprache erkannt. Bitte erneut versuchen.'
+        }));
+        return;
+      }
+
+      setProcessingProgress('Schritt 2/2: Text wird formatiert...');
+      const formattedText = await formatWithLlama(rawTranscript);
+
+      setState(prev => ({ ...prev, step: 'done', formattedText }));
+      setProcessingProgress('');
+
+      // Save as new dictation
+      const now = new Date().toISOString();
+      const newId = `dictation_${Date.now()}`;
+      const newRecord: DictationRecord = {
+        id: newId,
+        text: formattedText,
+        title: generateDictationTitle(formattedText),
+        createdAt: now,
+        lastModifiedAt: now,
+        chatMessages: [],
+        formatSpec: null
+      };
+      const updatedHistory = [newRecord, ...dictationHistory].slice(0, MAX_DICTATIONS);
+      setDictationHistory(updatedHistory);
+      saveDictationHistory(updatedHistory);
+      setCurrentDictationId(newId);
 
     } catch (error) {
-      console.error('File upload transcription error:', error);
+      console.error('File upload processing error:', error);
       setState(prev => ({
         ...prev,
         step: 'ready',
-        error: `Transkription fehlgeschlagen: ${error}`
+        error: `Verarbeitung fehlgeschlagen: ${error}`
       }));
     }
 
-    // Reset file input so same file can be selected again
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
-  // Step 3: Grammar Correction
-  const correctGrammar = async (text: string) => {
+  // Handle style document upload
+  const handleStyleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    for (const file of Array.from(files)) {
+      if (!file.name.endsWith('.docx') && !file.name.endsWith('.doc')) {
+        alert('Bitte nur Word-Dokumente (.docx, .doc) hochladen.');
+        continue;
+      }
+
+      try {
+        if ((window as any).__TAURI_INTERNALS__?.invoke) {
+          const invokeCmd = (window as any).__TAURI_INTERNALS__.invoke;
+
+          const arrayBuffer = await file.arrayBuffer();
+          const uint8Array = new Uint8Array(arrayBuffer);
+          const documentId = Date.now().toString();
+
+          const filePath = await invokeCmd('save_uploaded_document', {
+            fileData: Array.from(uint8Array),
+            filename: file.name,
+            documentId: documentId
+          });
+
+          const styleResult = await invokeCmd('analyze_document_style', {
+            filePath: filePath,
+            documentId: documentId
+          });
+
+          // Extract header content from the document analysis
+          const headerContent = styleResult.header_footer_info?.header_content || '';
+
+          const newStyleInfo = {
+            fontFamily: styleResult.font_family || 'Times New Roman',
+            fontSize: styleResult.font_size || 12,
+            lineSpacing: styleResult.line_spacing || 1.5,
+            hasExamples: true,
+            headerContent: headerContent
+          };
+
+          localStorage.setItem('gutachten_style_info', JSON.stringify(newStyleInfo));
+          setStyleInfo(newStyleInfo);
+
+          const existingDocs = getExampleDocuments();
+          const newDoc = {
+            id: documentId,
+            name: file.name,
+            size: file.size,
+            uploadDate: new Date(),
+            status: 'processed' as const,
+            analysisProgress: 100
+          };
+          localStorage.setItem('gutachten_example_documents', JSON.stringify([...existingDocs, newDoc]));
+        }
+      } catch (error) {
+        console.error('Style upload failed:', error);
+      }
+    }
+
+    setShowStyleUpload(false);
+    if (styleInputRef.current) {
+      styleInputRef.current.value = '';
+    }
+
+    alert('Stil-Vorlage wurde aktualisiert!');
+  };
+
+  // Save as DOCX file with styling - applies pending format spec if any
+  const saveAsDocx = async () => {
+    const text = state.formattedText;
     if (!text.trim()) {
-      setState(prev => ({ ...prev, step: 'done', correctedText: text }));
+      alert('Kein Text zum Speichern vorhanden.');
       return;
     }
 
-    setState(prev => ({ ...prev, step: 'correcting' }));
-    setProcessingProgress('Llama korrigiert Grammatik und Diktierbefehle...');
+    setIsSaving(true);
 
     try {
-      const result = await LlamaService.correctGrammar(text, true);
-      setState(prev => ({
-        ...prev,
-        step: 'done',
-        correctedText: result.corrected_text
-      }));
-      setProcessingProgress('');
-    } catch (error) {
-      console.error('Grammar correction error:', error);
-      // If correction fails, use raw transcript
-      setState(prev => ({
-        ...prev,
-        step: 'done',
-        correctedText: text,
-        error: 'Grammatikkorrektur fehlgeschlagen. Originaltext wird verwendet.'
-      }));
+      // First create the basic DOCX with text content
+      const result = await invoke('create_styled_docx', {
+        text: text,
+        fontFamily: styleInfo.fontFamily,
+        fontSize: styleInfo.fontSize,
+        lineSpacing: styleInfo.lineSpacing,
+        headerContent: styleInfo.headerContent || null  // Document header (top of every page)
+      }) as string;
+
+      // If we have pending format changes, apply them to the saved file
+      if (pendingFormatSpec && Object.keys(pendingFormatSpec).length > 0) {
+        try {
+          const specJson = JSON.stringify(pendingFormatSpec);
+          const formatResult = await invoke('format_docx_with_spec', {
+            inputDocx: result,
+            outputDocx: result,  // Overwrite the same file
+            specJson: specJson
+          }) as {
+            success: boolean;
+            applied_changes: Record<string, number>;
+            warnings: string[];
+            errors: string[];
+          };
+
+          if (formatResult.success) {
+            const changesText = Object.entries(formatResult.applied_changes)
+              .filter(([_, count]) => count > 0)
+              .map(([key, count]) => `${key}: ${count}`)
+              .join(', ');
+
+            alert(`Dokument gespeichert und formatiert:\n${result}\n\nAngewandte Formatierung: ${changesText || 'keine spezifischen Änderungen'}`);
+
+            // Clear the pending spec after successful application
+            setPendingFormatSpec(null);
+          } else {
+            console.warn('Formatting partially failed:', formatResult.errors);
+            alert(`Dokument gespeichert:\n${result}\n\nHinweis: Einige Formatierungen konnten nicht angewendet werden: ${formatResult.errors.join(', ')}`);
+          }
+        } catch (formatError) {
+          console.warn('Failed to apply format spec:', formatError);
+          alert(`Dokument gespeichert:\n${result}\n\nHinweis: Zusätzliche Formatierung konnte nicht angewendet werden.`);
+        }
+      } else {
+        alert(`Dokument gespeichert:\n${result}`);
+      }
+    } catch (error: any) {
+      if (error && error.toString().includes('abgebrochen')) {
+        // User cancelled
+      } else {
+        console.error('DOCX creation failed:', error);
+        alert(`Fehler beim Speichern: ${error}`);
+      }
     }
-  };
 
-  // Re-run correction on current text
-  const reCorrect = async () => {
-    const textToCorrect = state.correctedText || state.rawTranscript;
-    if (textToCorrect) {
-      await correctGrammar(textToCorrect);
-    }
-  };
-
-  // Edit mode handlers
-  const startEditing = () => {
-    setEditText(state.correctedText || state.rawTranscript);
-    setIsEditing(true);
-  };
-
-  const saveEdit = () => {
-    setState(prev => ({ ...prev, correctedText: editText }));
-    setIsEditing(false);
-  };
-
-  const cancelEdit = () => {
-    setIsEditing(false);
-    setEditText('');
-  };
-
-  // Copy to clipboard
-  const copyToClipboard = async () => {
-    const text = state.correctedText || state.rawTranscript;
-    try {
-      await navigator.clipboard.writeText(text);
-      alert('Text in Zwischenablage kopiert!');
-    } catch (error) {
-      console.error('Copy failed:', error);
-    }
-  };
-
-  // Save as file
-  const saveAsFile = () => {
-    const text = state.correctedText || state.rawTranscript;
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `gutachten_${new Date().toISOString().slice(0, 10)}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    setIsSaving(false);
   };
 
   // Reset workflow
@@ -294,13 +891,28 @@ const GutachtenWorkflowComponent: React.FC = () => {
     setState({
       step: 'ready',
       audioBlob: null,
-      rawTranscript: '',
-      correctedText: '',
+      formattedText: '',
       error: null
     });
     setRecordingTime(0);
     setProcessingProgress('');
-    setIsEditing(false);
+    setIsSaving(false);
+    setChatMessages([]);
+    setRevisionInput('');
+    setPendingFormatSpec(null);
+    setCurrentDictationId(null);
+  };
+
+  // Format date for display
+  const formatDate = (isoString: string): string => {
+    const date = new Date(isoString);
+    return date.toLocaleDateString('de-DE', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   };
 
   return (
@@ -324,9 +936,121 @@ const GutachtenWorkflowComponent: React.FC = () => {
             Gutachten Diktat
           </h1>
           <p style={{ color: '#64748b', marginTop: '8px', fontSize: '16px' }}>
-            Sprechen Sie Ihr Gutachten ein - KI transkribiert und korrigiert automatisch
+            Diktieren Sie Ihr Gutachten - KI transkribiert und formatiert automatisch
           </p>
+
+          {/* Style Upload Button */}
+          <button
+            onClick={() => setShowStyleUpload(true)}
+            style={{
+              marginTop: '16px',
+              padding: '8px 16px',
+              backgroundColor: styleInfo.hasExamples ? '#f0fdf4' : '#fef3c7',
+              border: `1px solid ${styleInfo.hasExamples ? '#22c55e' : '#f59e0b'}`,
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              color: styleInfo.hasExamples ? '#166534' : '#92400e',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}
+          >
+            {styleInfo.hasExamples ? '📄' : '⚠️'}
+            {styleInfo.hasExamples
+              ? `Stil-Vorlage: ${styleInfo.fontFamily}, ${styleInfo.fontSize}pt`
+              : 'Beispiel-Gutachten hochladen für Formatierung'}
+          </button>
         </div>
+
+        {/* Style Upload Modal */}
+        {showStyleUpload && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}>
+            <div style={{
+              backgroundColor: 'white',
+              borderRadius: '12px',
+              padding: '24px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)'
+            }}>
+              <h3 style={{ margin: '0 0 16px 0', color: '#1e293b' }}>
+                Beispiel-Gutachten hochladen
+              </h3>
+              <p style={{ color: '#64748b', marginBottom: '16px', fontSize: '14px' }}>
+                Laden Sie ein Gutachten-Beispiel hoch. Die KI analysiert Schriftart, Schriftgröße und Überschriften-Stil für zukünftige Dokumente.
+              </p>
+
+              <div style={{
+                border: '2px dashed #d1d5db',
+                borderRadius: '8px',
+                padding: '32px',
+                textAlign: 'center',
+                cursor: 'pointer',
+                backgroundColor: '#f9fafb'
+              }}
+              onClick={() => styleInputRef.current?.click()}
+              >
+                <div style={{ fontSize: '32px', marginBottom: '8px' }}>📄</div>
+                <p style={{ color: '#6b7280', margin: 0 }}>
+                  Word-Dokument hier ablegen oder klicken
+                </p>
+                <p style={{ color: '#9ca3af', fontSize: '12px', margin: '8px 0 0 0' }}>
+                  .docx, .doc Dateien
+                </p>
+              </div>
+
+              <input
+                ref={styleInputRef}
+                type="file"
+                multiple
+                accept=".doc,.docx"
+                onChange={handleStyleUpload}
+                style={{ display: 'none' }}
+              />
+
+              {styleInfo.hasExamples && (
+                <div style={{
+                  marginTop: '16px',
+                  padding: '12px',
+                  backgroundColor: '#f0fdf4',
+                  border: '1px solid #22c55e',
+                  borderRadius: '6px'
+                }}>
+                  <p style={{ margin: 0, color: '#166534', fontSize: '14px' }}>
+                    ✅ Aktueller Stil: {styleInfo.fontFamily}, {styleInfo.fontSize}pt
+                  </p>
+                </div>
+              )}
+
+              <div style={{ marginTop: '16px', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setShowStyleUpload(false)}
+                  style={{
+                    padding: '10px 20px',
+                    backgroundColor: '#e2e8f0',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Schließen
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Workflow Steps Indicator */}
         <div style={{
@@ -340,12 +1064,11 @@ const GutachtenWorkflowComponent: React.FC = () => {
             {[
               { key: 'ready', label: '1. Bereit', icon: '🎤' },
               { key: 'recording', label: '2. Aufnahme', icon: '⏺️' },
-              { key: 'transcribing', label: '3. Transkription', icon: '📝' },
-              { key: 'correcting', label: '4. Korrektur', icon: '✨' },
-              { key: 'done', label: '5. Fertig', icon: '✅' }
+              { key: 'processing', label: '3. Verarbeitung', icon: '⚙️' },
+              { key: 'done', label: '4. Speichern', icon: '💾' }
             ].map((s, index) => {
               const isActive = s.key === state.step;
-              const isPast = ['ready', 'recording', 'transcribing', 'correcting', 'done'].indexOf(state.step) > index;
+              const isPast = ['ready', 'recording', 'processing', 'done'].indexOf(state.step) > index;
               return (
                 <div key={s.key} style={{ textAlign: 'center', flex: 1 }}>
                   <div style={{
@@ -408,10 +1131,9 @@ const GutachtenWorkflowComponent: React.FC = () => {
                 Bereit für Diktat
               </h2>
               <p style={{ color: '#64748b', marginBottom: '24px' }}>
-                Sprechen Sie deutlich und verwenden Sie Diktierbefehle wie "Punkt", "Komma", "Klammer auf".
+                Diktieren Sie Ihr Gutachten. Die KI formatiert den Text automatisch und speichert ihn als Word-Dokument.
               </p>
 
-              {/* Two options: Record or Upload */}
               <div style={{
                 display: 'flex',
                 gap: '40px',
@@ -453,21 +1175,9 @@ const GutachtenWorkflowComponent: React.FC = () => {
                   justifyContent: 'center',
                   height: '120px'
                 }}>
-                  <div style={{
-                    width: '1px',
-                    height: '30px',
-                    backgroundColor: '#e2e8f0'
-                  }} />
-                  <span style={{
-                    color: '#94a3b8',
-                    fontSize: '14px',
-                    padding: '8px 0'
-                  }}>oder</span>
-                  <div style={{
-                    width: '1px',
-                    height: '30px',
-                    backgroundColor: '#e2e8f0'
-                  }} />
+                  <div style={{ width: '1px', height: '30px', backgroundColor: '#e2e8f0' }} />
+                  <span style={{ color: '#94a3b8', fontSize: '14px', padding: '8px 0' }}>oder</span>
+                  <div style={{ width: '1px', height: '30px', backgroundColor: '#e2e8f0' }} />
                 </div>
 
                 {/* Option 2: File Upload */}
@@ -506,17 +1216,106 @@ const GutachtenWorkflowComponent: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* Recent Dictations */}
+              {dictationHistory.length > 0 && (
+                <div style={{ marginTop: '40px', borderTop: '1px solid #e2e8f0', paddingTop: '24px' }}>
+                  <h3 style={{
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    color: '#475569',
+                    marginBottom: '16px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}>
+                    📋 Letzte Diktate ({dictationHistory.length}/{MAX_DICTATIONS})
+                  </h3>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    {dictationHistory.map((dictation) => (
+                      <div
+                        key={dictation.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '12px 16px',
+                          backgroundColor: '#f8fafc',
+                          border: '1px solid #e2e8f0',
+                          borderRadius: '8px',
+                          textAlign: 'left'
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{
+                            fontSize: '14px',
+                            fontWeight: '500',
+                            color: '#1e293b',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis'
+                          }}>
+                            {dictation.title}
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                            {formatDate(dictation.lastModifiedAt)}
+                            {dictation.chatMessages && dictation.chatMessages.length > 0 && (
+                              <span style={{ marginLeft: '8px' }}>
+                                • {dictation.chatMessages.length} Nachricht(en)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', marginLeft: '16px' }}>
+                          <button
+                            onClick={() => loadDictation(dictation)}
+                            style={{
+                              padding: '8px 16px',
+                              backgroundColor: '#3b82f6',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '13px',
+                              fontWeight: '500',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            ✏️ Weiterarbeiten
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm('Dieses Diktat wirklich löschen?')) {
+                                deleteDictation(dictation.id);
+                              }
+                            }}
+                            style={{
+                              padding: '8px 12px',
+                              backgroundColor: '#fee2e2',
+                              color: '#dc2626',
+                              border: '1px solid #fecaca',
+                              borderRadius: '6px',
+                              cursor: 'pointer',
+                              fontSize: '13px'
+                            }}
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* Recording State */}
           {state.step === 'recording' && (
             <div>
-              <div style={{
-                fontSize: '64px',
-                marginBottom: '16px',
-                animation: 'pulse 1.5s infinite'
-              }}>
+              <div style={{ fontSize: '64px', marginBottom: '16px', animation: 'pulse 1.5s infinite' }}>
                 ⏺️
               </div>
               <h2 style={{ fontSize: '24px', color: '#dc2626', marginBottom: '8px' }}>
@@ -531,7 +1330,7 @@ const GutachtenWorkflowComponent: React.FC = () => {
                 {formatTime(recordingTime)}
               </div>
               <button
-                onClick={stopRecordingAndTranscribe}
+                onClick={stopRecordingAndProcess}
                 style={{
                   backgroundColor: '#1e293b',
                   color: 'white',
@@ -552,27 +1351,21 @@ const GutachtenWorkflowComponent: React.FC = () => {
             </div>
           )}
 
-          {/* Processing States */}
-          {(state.step === 'transcribing' || state.step === 'correcting') && (
+          {/* Processing State */}
+          {state.step === 'processing' && (
             <div>
-              <div style={{
-                fontSize: '64px',
-                marginBottom: '16px',
-                animation: 'spin 2s linear infinite'
-              }}>
-                {state.step === 'transcribing' ? '📝' : '✨'}
+              <div style={{ fontSize: '64px', marginBottom: '16px', animation: 'spin 2s linear infinite' }}>
+                ⚙️
               </div>
               <h2 style={{ fontSize: '24px', color: '#3b82f6', marginBottom: '16px' }}>
-                {state.step === 'transcribing' ? 'Transkription...' : 'Grammatikkorrektur...'}
+                Verarbeitung...
               </h2>
-              <p style={{ color: '#64748b' }}>
-                {processingProgress}
-              </p>
+              <p style={{ color: '#64748b', fontSize: '16px' }}>{processingProgress}</p>
               <div style={{
-                width: '200px',
-                height: '4px',
+                width: '300px',
+                height: '6px',
                 backgroundColor: '#e2e8f0',
-                borderRadius: '2px',
+                borderRadius: '3px',
                 margin: '24px auto',
                 overflow: 'hidden'
               }}>
@@ -583,167 +1376,80 @@ const GutachtenWorkflowComponent: React.FC = () => {
                   animation: 'loading 1.5s infinite'
                 }} />
               </div>
+              <p style={{ color: '#94a3b8', fontSize: '13px', marginTop: '16px' }}>
+                Bitte warten Sie, während die KI Ihr Diktat verarbeitet...
+              </p>
             </div>
           )}
 
-          {/* Done State */}
+          {/* Done State - With revision chat */}
           {state.step === 'done' && (
-            <div style={{ textAlign: 'left' }}>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '16px'
-              }}>
-                <h2 style={{ fontSize: '20px', color: '#1e293b', margin: 0 }}>
-                  ✅ Korrigierter Text
-                </h2>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    onClick={startEditing}
-                    style={{
-                      padding: '8px 16px',
-                      backgroundColor: '#f1f5f9',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '14px'
-                    }}
-                  >
-                    ✏️ Bearbeiten
-                  </button>
-                  <button
-                    onClick={reCorrect}
-                    style={{
-                      padding: '8px 16px',
-                      backgroundColor: '#f1f5f9',
-                      border: '1px solid #e2e8f0',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '14px'
-                    }}
-                  >
-                    ✨ Nochmal korrigieren
-                  </button>
-                </div>
-              </div>
+            <div>
+              <div style={{ fontSize: '48px', marginBottom: '12px' }}>✅</div>
+              <h2 style={{ fontSize: '22px', color: '#22c55e', marginBottom: '8px' }}>
+                Gutachten fertig!
+              </h2>
+              <p style={{ color: '#64748b', marginBottom: '20px', fontSize: '14px' }}>
+                Speichern Sie das Dokument oder fordern Sie Änderungen an.
+              </p>
 
-              {isEditing ? (
-                <div>
-                  <textarea
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    style={{
-                      width: '100%',
-                      minHeight: '200px',
-                      padding: '16px',
-                      border: '2px solid #3b82f6',
-                      borderRadius: '8px',
-                      fontSize: '16px',
-                      lineHeight: '1.6',
-                      resize: 'vertical'
-                    }}
-                  />
-                  <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
-                    <button
-                      onClick={saveEdit}
-                      style={{
-                        padding: '10px 20px',
-                        backgroundColor: '#22c55e',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500'
-                      }}
-                    >
-                      ✅ Speichern
-                    </button>
-                    <button
-                      onClick={cancelEdit}
-                      style={{
-                        padding: '10px 20px',
-                        backgroundColor: '#e2e8f0',
-                        color: '#1e293b',
-                        border: 'none',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontSize: '14px'
-                      }}
-                    >
-                      Abbrechen
-                    </button>
-                  </div>
-                </div>
-              ) : (
+              {/* Pending Format Indicator */}
+              {pendingFormatSpec && Object.keys(pendingFormatSpec).length > 0 && (
                 <div style={{
-                  backgroundColor: '#f8fafc',
-                  border: '1px solid #e2e8f0',
+                  backgroundColor: '#fef3c7',
+                  border: '1px solid #f59e0b',
                   borderRadius: '8px',
-                  padding: '20px',
-                  fontSize: '16px',
-                  lineHeight: '1.8',
-                  color: '#1e293b',
-                  whiteSpace: 'pre-wrap',
-                  minHeight: '150px'
+                  padding: '12px 16px',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
                 }}>
-                  {state.correctedText || state.rawTranscript || 'Kein Text vorhanden.'}
+                  <span style={{ fontSize: '18px' }}>🎨</span>
+                  <span style={{ color: '#92400e', fontSize: '14px' }}>
+                    Formatierungsänderungen vorgemerkt - werden beim Speichern angewendet
+                  </span>
                 </div>
               )}
 
               {/* Action Buttons */}
               <div style={{
-                marginTop: '24px',
                 display: 'flex',
                 gap: '12px',
-                justifyContent: 'center'
+                justifyContent: 'center',
+                flexWrap: 'wrap',
+                marginBottom: '24px'
               }}>
                 <button
-                  onClick={copyToClipboard}
+                  onClick={saveAsDocx}
+                  disabled={isSaving || isRevising}
                   style={{
                     padding: '12px 24px',
-                    backgroundColor: '#3b82f6',
+                    backgroundColor: (isSaving || isRevising) ? '#94a3b8' : pendingFormatSpec ? '#8b5cf6' : '#2563eb',
                     color: 'white',
                     border: 'none',
                     borderRadius: '8px',
-                    cursor: 'pointer',
+                    cursor: (isSaving || isRevising) ? 'wait' : 'pointer',
                     fontSize: '16px',
-                    fontWeight: '500',
+                    fontWeight: '600',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '8px'
+                    gap: '8px',
+                    boxShadow: pendingFormatSpec ? '0 4px 14px rgba(139, 92, 246, 0.4)' : '0 4px 14px rgba(37, 99, 235, 0.4)'
                   }}
                 >
-                  📋 Kopieren
-                </button>
-                <button
-                  onClick={saveAsFile}
-                  style={{
-                    padding: '12px 24px',
-                    backgroundColor: '#22c55e',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '8px',
-                    cursor: 'pointer',
-                    fontSize: '16px',
-                    fontWeight: '500',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                  }}
-                >
-                  💾 Als Datei speichern
+                  {isSaving ? '⏳' : pendingFormatSpec ? '🎨' : '💾'} {isSaving ? 'Speichern...' : pendingFormatSpec ? 'Mit Formatierung speichern' : 'Als Word speichern'}
                 </button>
                 <button
                   onClick={resetWorkflow}
+                  disabled={isRevising}
                   style={{
                     padding: '12px 24px',
-                    backgroundColor: '#64748b',
-                    color: 'white',
-                    border: 'none',
+                    backgroundColor: '#f1f5f9',
+                    color: '#475569',
+                    border: '1px solid #e2e8f0',
                     borderRadius: '8px',
-                    cursor: 'pointer',
+                    cursor: isRevising ? 'not-allowed' : 'pointer',
                     fontSize: '16px',
                     fontWeight: '500',
                     display: 'flex',
@@ -754,35 +1460,138 @@ const GutachtenWorkflowComponent: React.FC = () => {
                   🔄 Neues Diktat
                 </button>
               </div>
+
+              {/* Chat Interface for Revisions */}
+              <div style={{
+                backgroundColor: '#f8fafc',
+                borderRadius: '12px',
+                border: '1px solid #e2e8f0',
+                padding: '16px',
+                marginTop: '16px'
+              }}>
+                <h3 style={{
+                  fontSize: '16px',
+                  fontWeight: '600',
+                  color: '#1e293b',
+                  marginBottom: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  💬 Änderungen anfordern
+                </h3>
+
+                {/* Chat Messages */}
+                {chatMessages.length > 0 && (
+                  <div style={{
+                    maxHeight: '200px',
+                    overflowY: 'auto',
+                    marginBottom: '12px',
+                    padding: '8px',
+                    backgroundColor: 'white',
+                    borderRadius: '8px',
+                    border: '1px solid #e2e8f0'
+                  }}>
+                    {chatMessages.map((msg, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          padding: '8px 12px',
+                          marginBottom: '8px',
+                          borderRadius: '8px',
+                          backgroundColor: msg.role === 'user' ? '#dbeafe' : '#f0fdf4',
+                          marginLeft: msg.role === 'user' ? '20%' : '0',
+                          marginRight: msg.role === 'assistant' ? '20%' : '0'
+                        }}
+                      >
+                        <div style={{
+                          fontSize: '11px',
+                          color: '#64748b',
+                          marginBottom: '4px'
+                        }}>
+                          {msg.role === 'user' ? '👤 Sie' : '🤖 Assistent'}
+                        </div>
+                        <div style={{ fontSize: '14px', color: '#1e293b' }}>
+                          {msg.content}
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={chatEndRef} />
+                  </div>
+                )}
+
+                {/* Input Area */}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={revisionInput}
+                    onChange={(e) => setRevisionInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleRevisionRequest()}
+                    placeholder="z.B. 'Ersetze Psychotherapie durch Verhaltenstherapie' oder 'Ergänze unter Diagnose: Lumboischialgie'"
+                    disabled={isRevising}
+                    style={{
+                      flex: 1,
+                      padding: '12px 16px',
+                      borderRadius: '8px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                      outline: 'none'
+                    }}
+                  />
+                  <button
+                    onClick={handleRevisionRequest}
+                    disabled={!revisionInput.trim() || isRevising}
+                    style={{
+                      padding: '12px 20px',
+                      backgroundColor: (!revisionInput.trim() || isRevising) ? '#94a3b8' : '#8b5cf6',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '8px',
+                      cursor: (!revisionInput.trim() || isRevising) ? 'not-allowed' : 'pointer',
+                      fontSize: '14px',
+                      fontWeight: '600',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    {isRevising ? '⏳' : '✏️'} {isRevising ? 'Bearbeite...' : 'Ändern'}
+                  </button>
+                </div>
+
+                <p style={{
+                  fontSize: '12px',
+                  color: '#94a3b8',
+                  marginTop: '8px',
+                  marginBottom: 0
+                }}>
+                  <strong>Textänderungen:</strong> Wörter ersetzen, Abschnitte ergänzen, Informationen hinzufügen.<br/>
+                  <strong>Formatierung:</strong> z.B. "Kopfzeile 10pt", "Seitenränder 30mm", "Titelseite mit 'Gutachten' als Titel"
+                </p>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Help Section */}
-        <div style={{
-          backgroundColor: '#eff6ff',
-          border: '1px solid #bfdbfe',
-          borderRadius: '12px',
-          padding: '20px'
-        }}>
-          <h3 style={{ fontSize: '16px', color: '#1e40af', marginTop: 0, marginBottom: '12px' }}>
-            💡 Diktierbefehle
-          </h3>
+        {/* Style Info */}
+        {styleInfo.hasExamples && state.step === 'ready' && (
           <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-            gap: '12px',
-            fontSize: '14px',
-            color: '#1e40af'
+            backgroundColor: '#f0fdf4',
+            border: '1px solid #22c55e',
+            borderRadius: '12px',
+            padding: '16px',
+            marginBottom: '24px'
           }}>
-            <div><strong>"Punkt"</strong> → .</div>
-            <div><strong>"Komma"</strong> → ,</div>
-            <div><strong>"Doppelpunkt"</strong> → :</div>
-            <div><strong>"Fragezeichen"</strong> → ?</div>
-            <div><strong>"In Klammern ... Klammern zu"</strong> → (...)</div>
-            <div><strong>"Neuer Absatz"</strong> → Zeilenumbruch</div>
+            <p style={{ margin: 0, color: '#166534', fontSize: '14px' }}>
+              📄 Dokumente werden formatiert mit: <strong>{styleInfo.fontFamily}</strong>, {styleInfo.fontSize}pt
+              {styleInfo.headerContent && (
+                <span style={{ marginLeft: '12px' }}>
+                  | 📋 Kopfzeile: "{styleInfo.headerContent.substring(0, 30)}{styleInfo.headerContent.length > 30 ? '...' : ''}"
+                </span>
+              )}
+            </p>
           </div>
-        </div>
+        )}
 
       </div>
 

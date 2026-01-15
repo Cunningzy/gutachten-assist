@@ -18,7 +18,7 @@ pub struct GrammarCorrectionResponse {
 /// Check if Llama model exists
 #[command]
 pub async fn get_llama_model_info() -> Result<Value, String> {
-    let model_path = PathBuf::from(r"C:\Users\kalin\Desktop\gutachten-assistant\models\llama-3.2-3b-instruct-q4_k_m.gguf");
+    let model_path = PathBuf::from(r"C:\Users\kalin\Desktop\gutachten-assistant\models\llama-3.1-8b-instruct-q4_k_m.gguf");
 
     let exists = model_path.exists();
     let status = if exists { "downloaded" } else { "not_downloaded" };
@@ -35,7 +35,7 @@ pub async fn get_llama_model_info() -> Result<Value, String> {
         "status": status,
         "model_path": model_path.to_string_lossy(),
         "size_mb": size_mb,
-        "model_name": "Llama 3.2 3B Instruct",
+        "model_name": "Llama 3.1 8B Instruct",
         "quantization": "Q4_K_M"
     }))
 }
@@ -43,14 +43,14 @@ pub async fn get_llama_model_info() -> Result<Value, String> {
 /// Check if model is ready (file exists)
 #[command]
 pub async fn is_llama_model_ready() -> Result<bool, String> {
-    let model_path = PathBuf::from(r"C:\Users\kalin\Desktop\gutachten-assistant\models\llama-3.2-3b-instruct-q4_k_m.gguf");
+    let model_path = PathBuf::from(r"C:\Users\kalin\Desktop\gutachten-assistant\models\llama-3.1-8b-instruct-q4_k_m.gguf");
     Ok(model_path.exists())
 }
 
 /// Download model (not implemented - model should already exist)
 #[command]
 pub async fn download_llama_model() -> Result<Value, String> {
-    Err("Model download not implemented. Please download Llama 3.2 3B manually.".to_string())
+    Err("Model download not implemented. Please download Llama 3.1 8B manually.".to_string())
 }
 
 /// Load model (not needed for Python script approach)

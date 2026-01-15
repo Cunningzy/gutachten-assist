@@ -24,6 +24,7 @@ pub struct DocumentStyleInfo {
     pub page_margins: PageMargins,
     pub header_footer_info: HeaderFooterInfo,
     pub style_summary: String,
+    pub headers_found: Vec<String>,  // Actual header text content found in document
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -352,6 +353,10 @@ fn analyze_document_content(
     // Extract heading styles
     let heading_styles = extract_heading_styles(document_xml, styles_xml);
 
+    // Extract actual header text content from the document
+    let headers_found = extract_header_text_content(document_xml);
+    println!("📋 Headers found in document: {:?}", headers_found);
+
     // Extract page margins (simplified)
     let page_margins = PageMargins {
         top: 2.54,    // Default values in cm
@@ -405,6 +410,7 @@ fn analyze_document_content(
         page_margins,
         header_footer_info,
         style_summary,
+        headers_found,
     })
 }
 
@@ -705,6 +711,128 @@ fn extract_heading_styles(document_xml: &str, styles_xml: &str) -> Vec<HeadingSt
     deduplicated_styles.sort_by_key(|style| style.level);
 
     deduplicated_styles
+}
+
+/// Extract actual header text content from document (like "FAMILIENANAMNESE", "DIAGNOSE", etc.)
+fn extract_header_text_content(document_xml: &str) -> Vec<String> {
+    println!("🔍 Extracting header text content from document...");
+
+    let mut headers = Vec::new();
+
+    // Common German medical report section headers to look for
+    let known_headers = vec![
+        "FAMILIENANAMNESE", "EIGENANAMNESE", "AKTUELLE BESCHWERDEN",
+        "BEFUND", "DIAGNOSE", "DIAGNOSEN", "THERAPIE", "EPIKRISE",
+        "BEURTEILUNG", "SOZIALANAMNESE", "ARBEITSANAMNESE",
+        "NEUROLOGISCHER BEFUND", "PSYCHIATRISCHER BEFUND",
+        "PSYCHOPATHOLOGISCHER BEFUND", "KÖRPERLICHE UNTERSUCHUNG",
+        "ZUSAMMENFASSUNG", "EMPFEHLUNG", "EMPFEHLUNGEN",
+        "ANAMNESE", "VORGESCHICHTE", "MEDIKATION", "MEDIKAMENTE",
+        "LABORWERTE", "APPARATIVE DIAGNOSTIK", "BILDGEBUNG",
+        "PSYCHOLOGISCHE TESTUNG", "NEUROPSYCHOLOGISCHE TESTUNG",
+        "SOZIALMEDIZINISCHE BEURTEILUNG", "LEISTUNGSBEURTEILUNG",
+        "PROGNOSE", "VERLAUF", "KRANKHEITSVERLAUF",
+        // Also check for lowercase and mixed case variations
+        "Familienanamnese", "Eigenanamnese", "Aktuelle Beschwerden",
+        "Befund", "Diagnose", "Diagnosen", "Therapie", "Epikrise",
+        "Beurteilung", "Sozialanamnese", "Arbeitsanamnese",
+    ];
+
+    // Method 1: Look for paragraphs with heading styles that contain text
+    let heading_paragraph_patterns = vec![
+        r#"<w:p[^>]*>.*?<w:pStyle[^>]*w:val="(Heading\d|berschrift\d|Title)"[^>]*/>.*?<w:t[^>]*>([^<]+)</w:t>.*?</w:p>"#,
+        r#"<w:p[^>]*>.*?<w:pStyle[^>]*w:val="(Heading\d)"[^>]*/>.*?</w:p>"#,
+    ];
+
+    for pattern in heading_paragraph_patterns {
+        if let Ok(regex) = Regex::new(pattern) {
+            for captures in regex.captures_iter(document_xml) {
+                // Try to get the text content
+                if let Some(text) = captures.get(2) {
+                    let header_text = text.as_str().trim().to_string();
+                    if !header_text.is_empty() && !headers.contains(&header_text) {
+                        println!("✅ Found header from style: {}", header_text);
+                        headers.push(header_text);
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 2: Look for known medical report headers in the document text
+    // Extract all text elements and check if any match known headers
+    if let Ok(text_regex) = Regex::new(r#"<w:t[^>]*>([^<]+)</w:t>"#) {
+        for captures in text_regex.captures_iter(document_xml) {
+            if let Some(text) = captures.get(1) {
+                let text_content = text.as_str().trim();
+
+                // Check if this text matches any known header
+                for known_header in &known_headers {
+                    if text_content.eq_ignore_ascii_case(known_header) ||
+                       text_content.to_uppercase() == known_header.to_uppercase() {
+                        let header_text = text_content.to_string();
+                        if !headers.contains(&header_text) &&
+                           !headers.iter().any(|h| h.eq_ignore_ascii_case(&header_text)) {
+                            println!("✅ Found known header: {}", header_text);
+                            headers.push(header_text);
+                        }
+                    }
+                }
+
+                // Also check for all-caps text that looks like a header (short, no punctuation)
+                if text_content.len() >= 4 &&
+                   text_content.len() <= 50 &&
+                   text_content.chars().all(|c| c.is_uppercase() || c.is_whitespace()) &&
+                   !text_content.contains('.') &&
+                   !text_content.contains(',') {
+                    let header_text = text_content.to_string();
+                    if !headers.contains(&header_text) {
+                        println!("✅ Found uppercase header: {}", header_text);
+                        headers.push(header_text);
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 3: Look for bold paragraphs that might be headers
+    // These are often marked with <w:b/> or <w:b w:val="true"/>
+    let bold_patterns = vec![
+        r#"<w:p[^>]*>.*?<w:b[^>]*/?>.*?<w:t[^>]*>([^<]+)</w:t>.*?</w:p>"#,
+        r#"<w:r[^>]*>.*?<w:b[^>]*/?>.*?<w:t[^>]*>([^<]+)</w:t>.*?</w:r>"#,
+    ];
+
+    for pattern in bold_patterns {
+        if let Ok(regex) = Regex::new(pattern) {
+            for captures in regex.captures_iter(document_xml) {
+                if let Some(text) = captures.get(1) {
+                    let text_content = text.as_str().trim();
+
+                    // Check if it's a short text that could be a header
+                    if text_content.len() >= 4 && text_content.len() <= 50 {
+                        // Check against known headers
+                        for known_header in &known_headers {
+                            if text_content.eq_ignore_ascii_case(known_header) {
+                                let header_text = text_content.to_string();
+                                if !headers.contains(&header_text) &&
+                                   !headers.iter().any(|h| h.eq_ignore_ascii_case(&header_text)) {
+                                    println!("✅ Found bold header: {}", header_text);
+                                    headers.push(header_text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    println!("📊 Total headers extracted: {}", headers.len());
+    for (i, header) in headers.iter().enumerate() {
+        println!("   {}: {}", i + 1, header);
+    }
+
+    headers
 }
 
 /// Extract font family from a style definition
