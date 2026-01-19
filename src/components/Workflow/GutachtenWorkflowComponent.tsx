@@ -211,6 +211,44 @@ const GutachtenWorkflowComponent: React.FC = () => {
     loadStyleProfile();
   }, []);
 
+  // Reset examples and StyleProfile - triggers onboarding again
+  const resetExamplesAndProfile = async () => {
+    if (!confirm('Alle Beispiel-Dokumente und das Stil-Profil werden gelöscht. Die App wird Sie erneut nach Beispielen fragen. Fortfahren?')) {
+      return;
+    }
+
+    try {
+      // Clear localStorage
+      localStorage.removeItem('gutachten_example_documents');
+      localStorage.removeItem('gutachten_style_info');
+
+      // Clear StyleProfile on disk
+      try {
+        await invoke('clear_style_profile');
+      } catch (err) {
+        console.log('Could not clear disk profile:', err);
+      }
+
+      // Clear state
+      setStyleProfilePrompt(null);
+      setStyleInfo({
+        fontFamily: 'Times New Roman',
+        fontSize: 12,
+        lineSpacing: 1.5,
+        hasExamples: false,
+        headerContent: ''
+      });
+
+      alert('Beispiele wurden zurückgesetzt. Bitte starten Sie die App neu, um neue Beispiele hochzuladen.');
+
+      // Reload the page to show onboarding
+      window.location.reload();
+    } catch (err) {
+      console.error('Reset failed:', err);
+      alert('Fehler beim Zurücksetzen: ' + err);
+    }
+  };
+
   // Load dictation history on mount
   useEffect(() => {
     const history = loadDictationHistory();
@@ -1279,6 +1317,24 @@ JSON:`;
                     style={{ display: 'none' }}
                   />
                 </div>
+              </div>
+
+              {/* Settings Link */}
+              <div style={{ marginTop: '32px' }}>
+                <button
+                  onClick={resetExamplesAndProfile}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#94a3b8',
+                    fontSize: '13px',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    padding: '4px 8px'
+                  }}
+                >
+                  Beispiel-Dokumente zurücksetzen
+                </button>
               </div>
 
               {/* Recent Dictations */}
