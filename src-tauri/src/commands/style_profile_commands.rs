@@ -14,7 +14,7 @@ pub struct SectionInfo {
     pub occurrence_count: i32,
     pub occurrence_percentage: f32,
     pub order: i32,
-    pub common_phrases: Vec<String>,
+    // Note: common_phrases removed - we only store section structure, not content
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -227,17 +227,15 @@ pub async fn clear_style_profile() -> Result<(), String> {
 }
 
 /// Get the StyleProfile as a formatted prompt string for Llama
+/// IMPORTANT: Only includes STRUCTURE (section names/order), NOT any content!
 #[command]
 pub async fn get_style_profile_prompt() -> Result<String, String> {
     let profile = load_style_profile().await?;
 
     let mut prompt = String::new();
 
-    prompt.push_str("=== GUTACHTEN STIL-PROFIL ===\n\n");
-    prompt.push_str(&format!("Basierend auf {} analysierten Beispiel-Gutachten.\n\n", profile.analyzed_documents));
-
-    // Section structure
-    prompt.push_str("ABSCHNITTS-STRUKTUR (in dieser Reihenfolge):\n");
+    prompt.push_str("ABSCHNITTS-STRUKTUR DES GUTACHTENS:\n");
+    prompt.push_str("(Verwende diese Reihenfolge für die Überschriften)\n\n");
 
     let required_sections: Vec<_> = profile.sections.iter()
         .filter(|s| s.is_required)
@@ -247,38 +245,17 @@ pub async fn get_style_profile_prompt() -> Result<String, String> {
         .filter(|s| !s.is_required)
         .collect();
 
-    prompt.push_str("\nPFLICHTABSCHNITTE (immer verwenden):\n");
-    for section in &required_sections {
-        prompt.push_str(&format!("  {}. {}\n", section.order + 1, section.display_name));
-        if !section.common_phrases.is_empty() {
-            prompt.push_str("     Typische Formulierungen:\n");
-            for phrase in section.common_phrases.iter().take(3) {
-                prompt.push_str(&format!("     - \"{}\"\n", phrase));
-            }
-        }
+    prompt.push_str("PFLICHT-ABSCHNITTE:\n");
+    for (i, section) in required_sections.iter().enumerate() {
+        prompt.push_str(&format!("  {}. {}\n", i + 1, section.display_name));
     }
 
     if !optional_sections.is_empty() {
-        prompt.push_str("\nOPTIONALE ABSCHNITTE (nur wenn vom Benutzer diktiert):\n");
+        prompt.push_str("\nOPTIONALE ABSCHNITTE (nur wenn im Diktat vorhanden):\n");
         for section in &optional_sections {
-            prompt.push_str(&format!("  - {} (in {}% der Gutachten)\n",
-                section.display_name, section.occurrence_percentage));
-            if !section.common_phrases.is_empty() {
-                prompt.push_str("     Typische Formulierungen:\n");
-                for phrase in section.common_phrases.iter().take(2) {
-                    prompt.push_str(&format!("     - \"{}\"\n", phrase));
-                }
-            }
+            prompt.push_str(&format!("  - {}\n", section.display_name));
         }
     }
-
-    // Formatting
-    prompt.push_str("\nFORMATIERUNG:\n");
-    prompt.push_str(&format!("  Schriftart: {}\n", profile.formatting.font_family));
-    prompt.push_str(&format!("  Schriftgröße: {}pt\n", profile.formatting.font_size_pt));
-    prompt.push_str(&format!("  Zeilenabstand: {}\n", profile.formatting.line_spacing));
-
-    prompt.push_str("\n=== ENDE STIL-PROFIL ===\n");
 
     Ok(prompt)
 }
