@@ -2,6 +2,12 @@
  * First Launch Onboarding Component
  * Collects 5-10 example Gutachten documents to build a StyleProfile
  * The StyleProfile teaches the AI the user's personal formatting style
+ *
+ * WORKFLOW:
+ * 1. Upload example documents
+ * 2. Build StyleProfile -> Template generated
+ * 3. Review template (preview sections, download, upload corrected, or approve)
+ * 4. Template approved -> onComplete
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -23,6 +29,20 @@ interface StyleProfileStatus {
   section_count: number;
   created_at: string | null;
   source_files: string[];
+}
+
+interface FormattingInfo {
+  font_family: string;
+  font_size_pt: number;
+  line_spacing: number;
+}
+
+interface TemplateInfo {
+  exists: boolean;
+  template_path: string;
+  is_approved: boolean;
+  sections: string[];
+  formatting: FormattingInfo | null;
 }
 
 interface FirstLaunchOnboardingProps {
@@ -84,6 +104,16 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
   const [buildStatus, setBuildStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const templateInputRef = useRef<HTMLInputElement>(null);
+
+  // Template review state
+  const [showTemplateReview, setShowTemplateReview] = useState(false);
+  const [templateInfo, setTemplateInfo] = useState<TemplateInfo | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isTemplateUploading, setIsTemplateUploading] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
 
   // Load previously uploaded documents
   useEffect(() => {
@@ -271,9 +301,18 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
           setBuildStatus(`Lerne Stil-Muster... ${i}%`);
         }
         setBuildProgress(100);
-        setBuildStatus('Stil-Profil erstellt!');
+        setBuildStatus('Vorlage erstellt!');
         await new Promise(resolve => setTimeout(resolve, 500));
-        onComplete();
+        // Show template review in dev mode
+        setTemplateInfo({
+          exists: true,
+          template_path: '/mock/template.docx',
+          is_approved: false,
+          sections: ['FAMILIENANAMNESE', 'EIGENANAMNESE', 'BEFUND', 'DIAGNOSE', 'BEURTEILUNG'],
+          formatting: { font_family: 'Times New Roman', font_size_pt: 12, line_spacing: 1.15 }
+        });
+        setIsBuildingProfile(false);
+        setShowTemplateReview(true);
         return;
       }
 
@@ -286,15 +325,20 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
       });
 
       setBuildProgress(80);
-      setBuildStatus('Speichere Stil-Profil...');
+      setBuildStatus('Erstelle Vorlage...');
 
       await new Promise(resolve => setTimeout(resolve, 300));
 
       setBuildProgress(100);
-      setBuildStatus(`Stil-Profil erstellt! ${(profile as any).sections?.length || 0} Abschnitte gelernt.`);
+      setBuildStatus(`Vorlage erstellt! ${(profile as any).sections?.length || 0} Abschnitte erkannt.`);
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      onComplete();
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Get template info and show review step
+      const info = await invoke('get_template_info') as TemplateInfo;
+      setTemplateInfo(info);
+      setIsBuildingProfile(false);
+      setShowTemplateReview(true);
 
     } catch (err) {
       console.error('Failed to build StyleProfile:', err);
@@ -302,6 +346,90 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
       setIsBuildingProfile(false);
       setBuildProgress(0);
       setBuildStatus('');
+    }
+  };
+
+  const downloadTemplate = async () => {
+    if (!(window as any).__TAURI_INTERNALS__?.invoke) {
+      alert('Download nur in der Desktop-App verfugbar');
+      return;
+    }
+
+    setIsDownloading(true);
+    setError(null);
+
+    try {
+      // Use Rust command with built-in save dialog
+      const savedPath = await invoke('save_template_with_dialog') as string;
+      console.log('Template saved to:', savedPath);
+
+    } catch (err: any) {
+      // Don't show error if user just cancelled
+      if (err && !err.toString().includes('abgebrochen')) {
+        console.error('Failed to download template:', err);
+        setError(`Fehler beim Herunterladen: ${err}`);
+      }
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleTemplateUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+
+    const file = e.target.files[0];
+    if (!file.name.endsWith('.docx')) {
+      setError('Bitte nur .docx Dateien hochladen.');
+      return;
+    }
+
+    setIsTemplateUploading(true);
+    setError(null);
+    setUploadSuccess(false);
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+
+      await invoke('upload_corrected_template', {
+        fileData: Array.from(uint8Array)
+      });
+
+      // Refresh template info
+      const info = await invoke('get_template_info') as TemplateInfo;
+      setTemplateInfo(info);
+
+      // Show success notification
+      setUploadedFileName(file.name);
+      setUploadSuccess(true);
+
+    } catch (err) {
+      console.error('Failed to upload template:', err);
+      setError(`Fehler beim Hochladen: ${err}`);
+    } finally {
+      setIsTemplateUploading(false);
+      if (templateInputRef.current) {
+        templateInputRef.current.value = '';
+      }
+    }
+  };
+
+  const approveTemplate = async () => {
+    if (!(window as any).__TAURI_INTERNALS__?.invoke) {
+      onComplete();
+      return;
+    }
+
+    setIsApproving(true);
+    setError(null);
+
+    try {
+      await invoke('approve_template');
+      onComplete();
+    } catch (err) {
+      console.error('Failed to approve template:', err);
+      setError(`Fehler beim Genehmigen: ${err}`);
+      setIsApproving(false);
     }
   };
 
@@ -317,7 +445,7 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
 
   const uploadedCount = uploadedDocuments.filter(d => d.status === 'uploaded').length;
   const hasMinimumDocuments = uploadedCount >= MIN_DOCUMENTS;
-  const isUploading = uploadedDocuments.some(d => d.status === 'uploading' || d.status === 'pending');
+  const isDocumentUploading = uploadedDocuments.some(d => d.status === 'uploading' || d.status === 'pending');
 
   return (
     <div style={{
@@ -418,7 +546,7 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
           </p>
 
           {/* Upload Area */}
-          {!isBuildingProfile && (
+          {!isBuildingProfile && !showTemplateReview && (
             <div
               style={{
                 border: `2px dashed ${dragActive ? '#3b82f6' : '#d1d5db'}`,
@@ -507,6 +635,180 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
             </div>
           )}
 
+          {/* Template Review Step */}
+          {showTemplateReview && templateInfo && (
+            <div style={{
+              backgroundColor: '#f0fdf4',
+              border: '1px solid #22c55e',
+              borderRadius: '8px',
+              padding: '24px',
+              marginBottom: '24px',
+            }}>
+              <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+                <div style={{ fontSize: '2.5rem', marginBottom: '8px' }}>📋</div>
+                <h3 style={{ color: '#166534', marginBottom: '8px', fontSize: '1.2rem' }}>
+                  Vorlage erstellt!
+                </h3>
+                <p style={{ color: '#15803d', fontSize: '0.9rem', margin: 0 }}>
+                  Bitte uberprufen Sie die erkannten Abschnitte
+                </p>
+              </div>
+
+              {/* Sections Preview */}
+              <div style={{
+                backgroundColor: 'white',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                padding: '16px',
+                marginBottom: '20px',
+              }}>
+                <h4 style={{ margin: '0 0 12px 0', color: '#374151', fontSize: '0.95rem' }}>
+                  Erkannte Abschnitte ({templateInfo.sections.length}):
+                </h4>
+                {templateInfo.sections.length > 0 ? (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {templateInfo.sections.map((section, index) => (
+                      <span key={index} style={{
+                        backgroundColor: '#dbeafe',
+                        color: '#1e40af',
+                        padding: '4px 12px',
+                        borderRadius: '16px',
+                        fontSize: '0.85rem',
+                        fontWeight: '500',
+                      }}>
+                        {section}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ color: '#6b7280', fontSize: '0.9rem', margin: 0 }}>
+                    Keine Abschnitte erkannt (wird beim Diktieren automatisch strukturiert)
+                  </p>
+                )}
+
+                {templateInfo.formatting && (
+                  <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e5e7eb' }}>
+                    <h4 style={{ margin: '0 0 8px 0', color: '#374151', fontSize: '0.9rem' }}>
+                      Formatierung:
+                    </h4>
+                    <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: 0 }}>
+                      {templateInfo.formatting.font_family}, {templateInfo.formatting.font_size_pt}pt,
+                      Zeilenabstand {templateInfo.formatting.line_spacing.toFixed(2)}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Upload Success Notification */}
+              {uploadSuccess && uploadedFileName && (
+                <div style={{
+                  backgroundColor: '#dcfce7',
+                  border: '2px solid #22c55e',
+                  borderRadius: '8px',
+                  padding: '16px',
+                  marginBottom: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                }}>
+                  <div style={{ fontSize: '1.5rem' }}>✅</div>
+                  <div>
+                    <div style={{ fontWeight: '700', color: '#166534', marginBottom: '4px' }}>
+                      Korrigierte Vorlage hochgeladen!
+                    </div>
+                    <div style={{ fontSize: '0.9rem', color: '#15803d' }}>
+                      "{uploadedFileName}" wird ab jetzt verwendet.
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+              }}>
+                {/* Download and Upload Row */}
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button
+                    onClick={downloadTemplate}
+                    disabled={isDownloading}
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'white',
+                      color: '#1e40af',
+                      padding: '12px 16px',
+                      border: '2px solid #3b82f6',
+                      borderRadius: '6px',
+                      cursor: isDownloading ? 'not-allowed' : 'pointer',
+                      fontSize: '0.9rem',
+                      fontWeight: '600',
+                      opacity: isDownloading ? 0.6 : 1,
+                    }}
+                  >
+                    {isDownloading ? 'Wird heruntergeladen...' : 'Vorlage herunterladen'}
+                  </button>
+
+                  <button
+                    onClick={() => templateInputRef.current?.click()}
+                    disabled={isTemplateUploading}
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'white',
+                      color: '#7c3aed',
+                      padding: '12px 16px',
+                      border: '2px solid #8b5cf6',
+                      borderRadius: '6px',
+                      cursor: isTemplateUploading ? 'not-allowed' : 'pointer',
+                      fontSize: '0.9rem',
+                      fontWeight: '600',
+                      opacity: isTemplateUploading ? 0.6 : 1,
+                    }}
+                  >
+                    {isTemplateUploading ? 'Wird hochgeladen...' : 'Korrigierte Version hochladen'}
+                  </button>
+                  <input
+                    ref={templateInputRef}
+                    type="file"
+                    accept=".docx"
+                    onChange={handleTemplateUpload}
+                    style={{ display: 'none' }}
+                  />
+                </div>
+
+                {/* Approve Button */}
+                <button
+                  onClick={approveTemplate}
+                  disabled={isApproving}
+                  style={{
+                    backgroundColor: '#22c55e',
+                    color: 'white',
+                    padding: '14px 24px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: isApproving ? 'not-allowed' : 'pointer',
+                    fontSize: '1rem',
+                    fontWeight: '700',
+                    opacity: isApproving ? 0.6 : 1,
+                  }}
+                >
+                  {isApproving ? 'Wird gespeichert...' : 'Es ist gut - Vorlage verwenden'}
+                </button>
+              </div>
+
+              <p style={{
+                color: '#6b7280',
+                fontSize: '0.8rem',
+                textAlign: 'center',
+                marginTop: '12px',
+                marginBottom: 0,
+              }}>
+                Sie konnen die Vorlage herunterladen, in Word bearbeiten und dann die korrigierte Version hochladen.
+              </p>
+            </div>
+          )}
+
           {/* Error Message */}
           {error && (
             <div style={{
@@ -523,7 +825,7 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
           )}
 
           {/* Uploaded Documents List */}
-          {uploadedDocuments.length > 0 && !isBuildingProfile && (
+          {uploadedDocuments.length > 0 && !isBuildingProfile && !showTemplateReview && (
             <div style={{ marginBottom: '24px' }}>
               <h3 style={{ color: '#374151', marginBottom: '12px', fontSize: '1rem' }}>
                 Hochgeladene Gutachten ({uploadedDocuments.length}/{MAX_DOCUMENTS})
@@ -598,7 +900,7 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
           )}
 
           {/* Action Buttons */}
-          {!isBuildingProfile && (
+          {!isBuildingProfile && !showTemplateReview && (
             <div style={{
               display: 'flex',
               justifyContent: 'space-between',
@@ -621,23 +923,23 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
               </button>
               <button
                 onClick={buildStyleProfile}
-                disabled={!hasMinimumDocuments || isUploading}
+                disabled={!hasMinimumDocuments || isDocumentUploading}
                 style={{
-                  backgroundColor: hasMinimumDocuments && !isUploading ? '#22c55e' : '#9ca3af',
+                  backgroundColor: hasMinimumDocuments && !isDocumentUploading ? '#22c55e' : '#9ca3af',
                   color: 'white',
                   padding: '12px 24px',
                   border: 'none',
                   borderRadius: '6px',
-                  cursor: hasMinimumDocuments && !isUploading ? 'pointer' : 'not-allowed',
+                  cursor: hasMinimumDocuments && !isDocumentUploading ? 'pointer' : 'not-allowed',
                   fontSize: '1rem',
                   fontWeight: '600',
                 }}
               >
-                {isUploading
+                {isDocumentUploading
                   ? 'Hochladen...'
                   : hasMinimumDocuments
                     ? 'Stil-Profil erstellen'
-                    : `Noch ${MIN_DOCUMENTS - uploadedCount} Dokument(e) nötig`
+                    : `Noch ${MIN_DOCUMENTS - uploadedCount} Dokument(e) notig`
                 }
               </button>
             </div>

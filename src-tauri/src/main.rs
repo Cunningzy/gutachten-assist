@@ -52,7 +52,16 @@ async fn main() {
             commands::load_style_profile,
             commands::get_style_profile_status,
             commands::clear_style_profile,
-            commands::get_style_profile_prompt
+            commands::get_style_profile_prompt,
+            // Template management commands
+            commands::get_template_info,
+            commands::download_template,
+            commands::save_template_with_dialog,
+            commands::upload_corrected_template,
+            commands::approve_template,
+            commands::is_template_approved,
+            // Llama worker management
+            commands::shutdown_llama_worker
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

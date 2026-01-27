@@ -259,7 +259,7 @@ pub async fn validate_audio_file(file_path: String) -> Result<bool, String> {
     // Check file size (limit to 500MB for now)
     let metadata = std::fs::metadata(&path)
         .map_err(|e| format!("Failed to read file metadata: {}", e))?;
-    
+
     const MAX_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500MB
     if metadata.len() > MAX_FILE_SIZE {
         return Err(format!(

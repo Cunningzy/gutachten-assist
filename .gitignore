@@ -70,3 +70,14 @@ nul
 
 # Tauri
 .tauri/
+
+# Llama.cpp binaries (download separately)
+llama-cpp-bin/
+llama-cpp-release.zip
+
+# User uploads (DSGVO - no patient data in repo)
+src-tauri/user-data/uploads/
+
+# Test files
+test_quick.txt
+C*test_quick.txt

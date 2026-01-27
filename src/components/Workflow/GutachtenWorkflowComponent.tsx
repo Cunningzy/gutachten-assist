@@ -9,9 +9,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { getExampleDocuments } from '../Onboarding/FirstLaunchOnboarding';
 
 interface WorkflowState {
-  step: 'ready' | 'recording' | 'processing' | 'done';
+  step: 'ready' | 'recording' | 'processing' | 'transcribed' | 'formatting' | 'done';
   audioBlob: Blob | null;
-  formattedText: string;
+  rawTranscript: string;  // Raw Whisper output
+  formattedText: string;  // After Llama formatting
   error: string | null;
 }
 
@@ -110,54 +111,38 @@ interface FormatSpec {
   styles?: Record<string, { font?: { name?: string; size_pt?: number; bold?: boolean } }>;
 }
 
-// Base medical typist prompt for Llama formatting
-const BASE_FORMATTING_PROMPT = `Du bist ein medizinischer Schreibassistent.
+// Build prompt for Llama - SIMPLE, just the text
+// The Python script handles:
+// - Step 1: Regex cleanup of dictation commands
+// - Step 2: Copy-editor correction (minimal grammar/spelling fixes)
+// - Step 3: Guardrails to prevent hallucination
+//
+// NO TEMPLATING IN LLM - template insertion happens in app code (DOCX generation)
 
-KRITISCH WICHTIG - LIES DAS GENAU:
-Du darfst NUR den diktierten Text des Benutzers verwenden!
-Erfinde KEINE neuen Informationen!
-Füge KEINE Texte hinzu, die nicht diktiert wurden!
-
-DEINE AUFGABE:
-1. Nimm den diktierten Rohtext
-2. Korrigiere Grammatik und Rechtschreibung
-3. Entferne Diktier-Befehle ("Punkt", "Komma", "Absatz", "neue Zeile")
-4. Strukturiere den Text mit passenden Überschriften
-
-REGELN:
-- Verwende NUR Informationen aus dem Eingabetext
-- Erfinde NICHTS dazu
-- Behalte ALLE diktierten Informationen
-- Überschriften als reiner Text (KEINE ** oder # Zeichen)
-- Keine Markdown-Formatierung
-- Keine Erklärungen oder Kommentare
-
+const buildFormattingPrompt = (_styleProfilePrompt: string | null): string => {
+  // Just mark where the dictated text starts - no extra instructions
+  // The LLM is a copy-editor only, not a template filler
+  return `DIKTIERTER TEXT:
 `;
-
-// Function to build the full formatting prompt with StyleProfile
-const buildFormattingPrompt = (styleProfilePrompt: string | null): string => {
-  let prompt = BASE_FORMATTING_PROMPT;
-
-  if (styleProfilePrompt) {
-    prompt += `
-${styleProfilePrompt}
-
-WICHTIG: Verwende diese Abschnitts-Namen als Überschriften, wenn der Inhalt dazu passt.
-Aber füge NUR Abschnitte hinzu, für die der Benutzer auch Text diktiert hat!
-
-`;
-  }
-
-  prompt += `EINGABE (diktierter Text - verwende NUR diesen Inhalt):
-`;
-
-  return prompt;
 };
+
+// Test mode interface for debugging Llama
+interface TestModeResult {
+  input: string;
+  output: string;
+  guardrailStatus: string;
+  violations: string[];
+  processingTimeMs: number;
+  notes: string[];
+  attempts: number;
+  removedTokens: string[];
+}
 
 const GutachtenWorkflowComponent: React.FC = () => {
   const [state, setState] = useState<WorkflowState>({
     step: 'ready',
     audioBlob: null,
+    rawTranscript: '',
     formattedText: '',
     error: null
   });
@@ -181,6 +166,15 @@ const GutachtenWorkflowComponent: React.FC = () => {
   const [currentDictationId, setCurrentDictationId] = useState<string | null>(null);
   const [styleProfilePrompt, setStyleProfilePrompt] = useState<string | null>(null);
   const [styleProfileLoaded, setStyleProfileLoaded] = useState(false);
+  const [rawTranscriptDebug, setRawTranscriptDebug] = useState<string>('');
+  const [showRawTranscript, setShowRawTranscript] = useState(false);
+
+  // Test mode state
+  const [showTestMode, setShowTestMode] = useState(false);
+  const [testInput, setTestInput] = useState('');
+  const [testResult, setTestResult] = useState<TestModeResult | null>(null);
+  const [isTestRunning, setIsTestRunning] = useState(false);
+  const [testHistory, setTestHistory] = useState<TestModeResult[]>([]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -362,28 +356,49 @@ const GutachtenWorkflowComponent: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Format raw transcript using Llama with StyleProfile
+  // Format raw transcript using Llama with two-step pipeline + guardrails:
+  // Step 1: Regex cleanup of dictation commands (Python - deterministic)
+  // Step 2: Copy-editor correction only - minimal spelling/grammar fixes (LLM)
+  // Step 3: Guardrails check - rejects if LLM hallucinates or rewrites
+  // NO TEMPLATING - template insertion happens in DOCX generation (deterministic)
   const formatWithLlama = async (rawText: string): Promise<string> => {
-    if (styleProfilePrompt) {
-      setProcessingProgress('Text wird nach Ihrem Stil formatiert...');
-    } else {
-      setProcessingProgress('Text wird formatiert und korrigiert...');
-    }
+    setProcessingProgress('Text wird bereinigt und korrigiert...');
 
     try {
-      // Build prompt with StyleProfile if available
+      // Build simple prompt with marker - Python script handles the two-step pipeline
       const prompt = buildFormattingPrompt(styleProfilePrompt) + rawText;
 
-      console.log('Formatting with StyleProfile:', styleProfilePrompt ? 'YES' : 'NO');
+      console.log('=== SENDING TO LLAMA (Two-Step Pipeline) ===');
+      console.log('Raw text length:', rawText.length);
+      console.log('First 200 chars:', rawText.substring(0, 200));
 
       const result = await invoke('correct_german_grammar', {
         text: prompt,
         convertDictationCommands: false
       }) as { corrected_text: string };
 
+      // DEBUG: Log full result
+      console.log('=== FULL LLAMA RESULT ===');
+      console.log('Result object:', JSON.stringify(result, null, 2));
+      console.log('corrected_text type:', typeof result.corrected_text);
+      console.log('corrected_text length:', result.corrected_text?.length);
+
+      // Check if we got a valid response - don't use || which treats "" as falsy
+      let cleanedText: string;
+      if (result.corrected_text !== undefined && result.corrected_text !== null && result.corrected_text.trim() !== '') {
+        cleanedText = result.corrected_text;
+        console.log('Using Llama corrected text');
+      } else {
+        console.warn('WARNING: Llama returned empty/null text, falling back to raw text');
+        cleanedText = rawText;
+      }
+
       // Strip any markdown formatting that Llama might have added
-      let cleanedText = result.corrected_text || rawText;
       cleanedText = stripMarkdownFormatting(cleanedText);
+
+      console.log('=== FINAL TEXT AFTER PROCESSING ===');
+      console.log('Final length:', cleanedText.length);
+      console.log('First 200 chars:', cleanedText.substring(0, 200));
 
       return cleanedText;
     } catch (error) {
@@ -421,53 +436,26 @@ const GutachtenWorkflowComponent: React.FC = () => {
     return cleaned.trim();
   };
 
-  // Specialized prompt for editing formatted Gutachten
+  // Specialized prompt for editing formatted Gutachten - follows strict copy-edit principles
   const buildRevisionPrompt = (currentText: string, userInstructions: string) => {
-    // Check if user mentions examples/Beispiel - if so, include StyleProfile
-    const mentionsExample = /beispiel|vorlage|muster|stil|struktur|wie\s+in/i.test(userInstructions);
-    const includeStyleProfile = mentionsExample && styleProfilePrompt;
+    let prompt = `Du bist ein Korrekturleser für deutsche medizinische Gutachten.
 
-    let prompt = `Bearbeite dieses deutsche medizinische Gutachten nach den Anweisungen des Benutzers.
+STRENGE REGELN:
 
-STRENGE REGELN - UNBEDINGT BEFOLGEN:
+1. Führe NUR die Änderung aus, die der Benutzer anfordert
+2. Der REST des Textes muss UNVERÄNDERT bleiben
+3. KEIN Umschreiben, KEIN Paraphrasieren
+4. Überschriften NIEMALS ändern (z.B. "FAMILIENANAMNESE" bleibt "FAMILIENANAMNESE")
+5. Gib NUR reinen Text aus - KEINE Formatierungszeichen (**, #, etc.)
+6. Keine Erklärungen, keine Kommentare
 
-1. Gib NUR reinen Text aus - KEINE Formatierungszeichen!
-2. VERBOTEN: ** # __ <b> <font> <big> oder andere Markup-Zeichen
-3. Überschriften sind normaler Text, z.B.: "IX. Sozialversicherungspflichtige Tätigkeit"
-4. NICHT so: "**IX. Sozialversicherungspflichtige Tätigkeit**"
-5. Keine Erklärungen, keine Kommentare - nur der bearbeitete Text
-
-WAS DU ÄNDERN KANNST:
-- Wörter ersetzen, Text hinzufügen oder entfernen
-- Absätze umformulieren
-- Abschnitte umstrukturieren
-- Informationen ergänzen oder korrigieren
-
-WAS DU NICHT ÄNDERN KANNST (wird beim Word-Export gemacht):
-- Schriftgröße, Fettdruck, Kursiv
-- Seitenkopf (Header) - das ist Word-Formatierung
-- Titelseite mit Seitenumbruch
-
-Wenn der Benutzer "Titelseite" oder "Titel" sagt: Setze den relevanten Text an den Anfang des Dokuments auf eigenen Zeilen.
-`;
-
-    if (includeStyleProfile) {
-      prompt += `
-DEIN GELERNTER STIL (aus den Beispiel-Gutachten):
-${styleProfilePrompt}
-
-WICHTIG: Strukturiere den Text EXAKT nach diesem Stil-Profil!
-`;
-    }
-
-    prompt += `
 AKTUELLER TEXT:
 ${currentText}
 
-ANWEISUNGEN:
+ÄNDERUNGSANWEISUNG DES BENUTZERS:
 ${userInstructions}
 
-Gib jetzt den vollständigen, bearbeiteten Text aus (ohne Formatierungszeichen):`;
+Gib den vollständigen Text aus mit NUR der angeforderten Änderung:`;
 
     return prompt;
   };
@@ -700,10 +688,10 @@ JSON:`;
     await processAudio(audioBlob);
   };
 
-  // Process audio: Transcribe with Whisper, then format with Llama
+  // Process audio: Transcribe with Whisper only (step 1)
   const processAudio = async (audioBlob: Blob) => {
     try {
-      setProcessingProgress('Schritt 1/2: Sprache wird erkannt...');
+      setProcessingProgress('Whisper: Sprache wird erkannt...');
 
       const arrayBuffer = await audioBlob.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
@@ -719,6 +707,12 @@ JSON:`;
 
       const rawTranscript = result.text || '';
 
+      // Save raw transcript for debugging
+      setRawTranscriptDebug(rawTranscript);
+      console.log('=== RAW WHISPER TRANSCRIPT ===');
+      console.log(rawTranscript);
+      console.log('=== END RAW TRANSCRIPT ===');
+
       if (!rawTranscript.trim()) {
         setState(prev => ({
           ...prev,
@@ -728,7 +722,32 @@ JSON:`;
         return;
       }
 
-      setProcessingProgress('Schritt 2/2: Text wird formatiert...');
+      // Stop at 'transcribed' step - user can review and then proceed to Llama
+      setState(prev => ({ ...prev, step: 'transcribed', rawTranscript }));
+      setProcessingProgress('');
+
+    } catch (error) {
+      console.error('Processing error:', error);
+      setState(prev => ({
+        ...prev,
+        step: 'ready',
+        error: `Verarbeitung fehlgeschlagen: ${error}`
+      }));
+    }
+  };
+
+  // Format with Llama (step 2) - called when user clicks "Weiter"
+  const proceedToFormatting = async () => {
+    const rawTranscript = state.rawTranscript;
+    if (!rawTranscript.trim()) {
+      setState(prev => ({ ...prev, error: 'Kein Transkript zum Formatieren vorhanden.' }));
+      return;
+    }
+
+    setState(prev => ({ ...prev, step: 'formatting' }));
+    setProcessingProgress('Llama: Text wird formatiert...');
+
+    try {
       const formattedText = await formatWithLlama(rawTranscript);
 
       setState(prev => ({ ...prev, step: 'done', formattedText }));
@@ -752,12 +771,13 @@ JSON:`;
       setCurrentDictationId(newId);
 
     } catch (error) {
-      console.error('Processing error:', error);
+      console.error('Formatting error:', error);
       setState(prev => ({
         ...prev,
-        step: 'ready',
-        error: `Verarbeitung fehlgeschlagen: ${error}`
+        step: 'transcribed',
+        error: `Llama Formatierung fehlgeschlagen: ${error}`
       }));
+      setProcessingProgress('');
     }
   };
 
@@ -790,7 +810,7 @@ JSON:`;
     setState(prev => ({ ...prev, step: 'processing', error: null, formattedText: '' }));
 
     try {
-      setProcessingProgress(`Schritt 1/2: "${file.name}" wird transkribiert...`);
+      setProcessingProgress(`Whisper: "${file.name}" wird transkribiert...`);
 
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
@@ -806,6 +826,12 @@ JSON:`;
 
       const rawTranscript = result.text || '';
 
+      // Save raw transcript for debugging
+      setRawTranscriptDebug(rawTranscript);
+      console.log('=== RAW WHISPER TRANSCRIPT ===');
+      console.log(rawTranscript);
+      console.log('=== END RAW TRANSCRIPT ===');
+
       if (!rawTranscript.trim()) {
         setState(prev => ({
           ...prev,
@@ -815,28 +841,9 @@ JSON:`;
         return;
       }
 
-      setProcessingProgress('Schritt 2/2: Text wird formatiert...');
-      const formattedText = await formatWithLlama(rawTranscript);
-
-      setState(prev => ({ ...prev, step: 'done', formattedText }));
+      // Stop at 'transcribed' step - user can review and then proceed to Llama
+      setState(prev => ({ ...prev, step: 'transcribed', rawTranscript }));
       setProcessingProgress('');
-
-      // Save as new dictation
-      const now = new Date().toISOString();
-      const newId = `dictation_${Date.now()}`;
-      const newRecord: DictationRecord = {
-        id: newId,
-        text: formattedText,
-        title: generateDictationTitle(formattedText),
-        createdAt: now,
-        lastModifiedAt: now,
-        chatMessages: [],
-        formatSpec: null
-      };
-      const updatedHistory = [newRecord, ...dictationHistory].slice(0, MAX_DICTATIONS);
-      setDictationHistory(updatedHistory);
-      saveDictationHistory(updatedHistory);
-      setCurrentDictationId(newId);
 
     } catch (error) {
       console.error('File upload processing error:', error);
@@ -993,6 +1000,7 @@ JSON:`;
     setState({
       step: 'ready',
       audioBlob: null,
+      rawTranscript: '',
       formattedText: '',
       error: null
     });
@@ -1003,7 +1011,104 @@ JSON:`;
     setRevisionInput('');
     setPendingFormatSpec(null);
     setCurrentDictationId(null);
+    setRawTranscriptDebug('');
   };
+
+  // ============================================================
+  // TEST MODE: Direct Llama testing without Whisper
+  // ============================================================
+
+  const runLlamaTest = async () => {
+    if (!testInput.trim() || isTestRunning) return;
+
+    setIsTestRunning(true);
+    setTestResult(null);
+
+    const startTime = Date.now();
+
+    try {
+      console.log('=== LLAMA TEST MODE ===');
+      console.log('Input text:', testInput);
+      console.log('Input length:', testInput.length, 'chars');
+
+      // Build the same prompt as the real workflow
+      const prompt = buildFormattingPrompt(styleProfilePrompt) + testInput;
+
+      const result = await invoke('correct_german_grammar', {
+        text: prompt,
+        convertDictationCommands: false
+      }) as {
+        corrected_text: string;
+        guardrail_status: string;
+        violations: string[];
+        notes: string[];
+        attempts: number;
+        processing_time_ms: number;
+        removed_tokens: string[];
+        changes_made: string[];
+        confidence: number;
+      };
+
+      const endTime = Date.now();
+
+      console.log('=== LLAMA TEST RESULT ===');
+      console.log('Output:', result.corrected_text);
+      console.log('Output length:', result.corrected_text?.length, 'chars');
+      console.log('Guardrail status:', result.guardrail_status);
+      console.log('Violations:', result.violations);
+
+      const testResultData: TestModeResult = {
+        input: testInput,
+        output: result.corrected_text || testInput,
+        guardrailStatus: result.guardrail_status || 'unknown',
+        violations: result.violations || [],
+        processingTimeMs: result.processing_time_ms || (endTime - startTime),
+        notes: result.notes || [],
+        attempts: result.attempts || 1,
+        removedTokens: result.removed_tokens || []
+      };
+
+      setTestResult(testResultData);
+      setTestHistory(prev => [testResultData, ...prev].slice(0, 10)); // Keep last 10
+
+    } catch (error) {
+      console.error('Llama test failed:', error);
+      const endTime = Date.now();
+
+      setTestResult({
+        input: testInput,
+        output: `ERROR: ${error}`,
+        guardrailStatus: 'error',
+        violations: [`Fehler: ${error}`],
+        processingTimeMs: endTime - startTime,
+        notes: ['Test fehlgeschlagen'],
+        attempts: 0,
+        removedTokens: []
+      });
+    }
+
+    setIsTestRunning(false);
+  };
+
+  // Sample test texts for quick testing
+  const sampleTestTexts = [
+    {
+      label: 'Diktierbefehle',
+      text: 'Der Patient ist 45 Jahre alt Punkt Er leidet an Rückenschmerzen Komma die seit 5 Jahren bestehen Punkt Neue Zeile Diagnose Doppelpunkt Lumboischialgie'
+    },
+    {
+      label: 'Grammatikfehler',
+      text: 'Der Patient hat keine beschwerden und fühlt sich gut. Er ist sehr zufriden mit der behandlung. Die medikamente wirken gut.'
+    },
+    {
+      label: 'Medizinischer Text',
+      text: 'Familienanamnese Der Patient berichtet über keine bekannten Erbkrankheiten in der Familie. Eigenanamnese Der Patient ist 45 Jahre alt und leidet seit 5 Jahren an Rückenschmerzen.'
+    },
+    {
+      label: 'Langer Text',
+      text: 'Die körperliche Untersuchung ergab einen normalen Befund. Der Blutdruck betrug 120/80 mmHg, Puls 72/min. Die Herzauskultation zeigte reine Herztöne ohne pathologische Geräusche. Die Lunge war seitengleich belüftet. Der Bauch war weich, keine Druckschmerzhaftigkeit.'
+    }
+  ];
 
   // Format date for display
   const formatDate = (isoString: string): string => {
@@ -1166,11 +1271,14 @@ JSON:`;
             {[
               { key: 'ready', label: '1. Bereit', icon: '🎤' },
               { key: 'recording', label: '2. Aufnahme', icon: '⏺️' },
-              { key: 'processing', label: '3. Verarbeitung', icon: '⚙️' },
-              { key: 'done', label: '4. Speichern', icon: '💾' }
+              { key: 'processing', label: '3. Whisper', icon: '🎧' },
+              { key: 'transcribed', label: '4. Transkript', icon: '📝' },
+              { key: 'formatting', label: '5. Llama', icon: '🦙' },
+              { key: 'done', label: '6. Speichern', icon: '💾' }
             ].map((s, index) => {
               const isActive = s.key === state.step;
-              const isPast = ['ready', 'recording', 'processing', 'done'].indexOf(state.step) > index;
+              const stepOrder = ['ready', 'recording', 'processing', 'transcribed', 'formatting', 'done'];
+              const isPast = stepOrder.indexOf(state.step) > index;
               return (
                 <div key={s.key} style={{ textAlign: 'center', flex: 1 }}>
                   <div style={{
@@ -1200,6 +1308,363 @@ JSON:`;
             })}
           </div>
         </div>
+
+        {/* Test Mode Toggle Button */}
+        <div style={{
+          backgroundColor: 'white',
+          borderRadius: '12px',
+          padding: '12px 20px',
+          marginBottom: '24px',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <span style={{ color: '#64748b', fontSize: '14px' }}>
+            🧪 Llama Debug-Modus
+          </span>
+          <button
+            onClick={() => setShowTestMode(!showTestMode)}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: showTestMode ? '#ef4444' : '#8b5cf6',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontWeight: '500'
+            }}
+          >
+            {showTestMode ? '✕ Test-Modus schließen' : '🧪 Test-Modus öffnen'}
+          </button>
+        </div>
+
+        {/* Test Mode Panel */}
+        {showTestMode && (
+          <div style={{
+            backgroundColor: '#faf5ff',
+            border: '2px solid #8b5cf6',
+            borderRadius: '12px',
+            padding: '24px',
+            marginBottom: '24px'
+          }}>
+            <h3 style={{
+              margin: '0 0 16px 0',
+              color: '#6b21a8',
+              fontSize: '18px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              🧪 Llama Test-Modus (ohne Whisper)
+            </h3>
+            <p style={{ color: '#7c3aed', marginBottom: '16px', fontSize: '14px' }}>
+              Geben Sie Text direkt ein, um die Llama-Korrektur zu testen. Dies umgeht Whisper komplett.
+            </p>
+
+            {/* Sample Text Buttons */}
+            <div style={{
+              display: 'flex',
+              gap: '8px',
+              flexWrap: 'wrap',
+              marginBottom: '16px'
+            }}>
+              <span style={{ color: '#6b21a8', fontSize: '13px', fontWeight: '500' }}>Beispiele:</span>
+              {sampleTestTexts.map((sample, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setTestInput(sample.text)}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#ede9fe',
+                    border: '1px solid #c4b5fd',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    color: '#5b21b6'
+                  }}
+                >
+                  {sample.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Input Textarea */}
+            <textarea
+              value={testInput}
+              onChange={(e) => setTestInput(e.target.value)}
+              placeholder="Text hier eingeben oder einfügen..."
+              style={{
+                width: '100%',
+                minHeight: '150px',
+                padding: '12px',
+                borderRadius: '8px',
+                border: '1px solid #c4b5fd',
+                fontSize: '14px',
+                fontFamily: 'inherit',
+                resize: 'vertical',
+                marginBottom: '12px',
+                boxSizing: 'border-box'
+              }}
+            />
+
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+              <button
+                onClick={runLlamaTest}
+                disabled={!testInput.trim() || isTestRunning}
+                style={{
+                  padding: '12px 24px',
+                  backgroundColor: (!testInput.trim() || isTestRunning) ? '#94a3b8' : '#8b5cf6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: (!testInput.trim() || isTestRunning) ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {isTestRunning ? '⏳ Verarbeite...' : '🦙 An Llama senden'}
+              </button>
+              <button
+                onClick={() => {
+                  setTestInput('');
+                  setTestResult(null);
+                }}
+                style={{
+                  padding: '12px 20px',
+                  backgroundColor: '#f1f5f9',
+                  color: '#475569',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                🗑️ Leeren
+              </button>
+            </div>
+
+            {/* Test Result Display */}
+            {testResult && (
+              <div style={{
+                backgroundColor: 'white',
+                borderRadius: '8px',
+                padding: '16px',
+                border: '1px solid #e2e8f0'
+              }}>
+                <h4 style={{
+                  margin: '0 0 12px 0',
+                  color: '#1e293b',
+                  fontSize: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <span>📊 Test-Ergebnis</span>
+                  <span style={{
+                    fontSize: '12px',
+                    fontWeight: 'normal',
+                    color: '#64748b'
+                  }}>
+                    {testResult.processingTimeMs}ms | {testResult.attempts} Versuch(e)
+                  </span>
+                </h4>
+
+                {/* Guardrail Status */}
+                <div style={{
+                  padding: '12px',
+                  borderRadius: '6px',
+                  marginBottom: '16px',
+                  backgroundColor: testResult.guardrailStatus === 'passed' ? '#f0fdf4' :
+                                   testResult.guardrailStatus === 'error' ? '#fef2f2' : '#fef3c7',
+                  border: `1px solid ${
+                    testResult.guardrailStatus === 'passed' ? '#22c55e' :
+                    testResult.guardrailStatus === 'error' ? '#ef4444' : '#f59e0b'
+                  }`
+                }}>
+                  <div style={{
+                    fontWeight: '600',
+                    color: testResult.guardrailStatus === 'passed' ? '#166534' :
+                           testResult.guardrailStatus === 'error' ? '#dc2626' : '#92400e',
+                    marginBottom: testResult.violations.length > 0 ? '8px' : '0'
+                  }}>
+                    {testResult.guardrailStatus === 'passed' ? '✅ Guardrails bestanden' :
+                     testResult.guardrailStatus === 'error' ? '❌ Fehler' :
+                     testResult.guardrailStatus === 'violations_detected' ? '⚠️ Guardrail-Verstöße erkannt' :
+                     `Status: ${testResult.guardrailStatus}`}
+                  </div>
+                  {testResult.violations.length > 0 && (
+                    <ul style={{
+                      margin: 0,
+                      paddingLeft: '20px',
+                      fontSize: '13px',
+                      color: '#92400e'
+                    }}>
+                      {testResult.violations.map((v, i) => (
+                        <li key={i}>{v}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Side-by-side comparison */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '16px'
+                }}>
+                  {/* Input */}
+                  <div>
+                    <h5 style={{
+                      margin: '0 0 8px 0',
+                      color: '#dc2626',
+                      fontSize: '14px'
+                    }}>
+                      📥 INPUT ({testResult.input.length} Zeichen)
+                    </h5>
+                    <pre style={{
+                      backgroundColor: '#fef2f2',
+                      padding: '12px',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      maxHeight: '300px',
+                      overflow: 'auto',
+                      margin: 0,
+                      fontFamily: 'inherit',
+                      border: '1px solid #fecaca'
+                    }}>
+                      {testResult.input}
+                    </pre>
+                  </div>
+
+                  {/* Output */}
+                  <div>
+                    <h5 style={{
+                      margin: '0 0 8px 0',
+                      color: '#16a34a',
+                      fontSize: '14px'
+                    }}>
+                      📤 OUTPUT ({testResult.output.length} Zeichen)
+                    </h5>
+                    <pre style={{
+                      backgroundColor: '#f0fdf4',
+                      padding: '12px',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      maxHeight: '300px',
+                      overflow: 'auto',
+                      margin: 0,
+                      fontFamily: 'inherit',
+                      border: '1px solid #bbf7d0'
+                    }}>
+                      {testResult.output}
+                    </pre>
+                  </div>
+                </div>
+
+                {/* Comparison Analysis */}
+                <div style={{
+                  marginTop: '16px',
+                  padding: '12px',
+                  backgroundColor: testResult.input === testResult.output ? '#fef2f2' : '#f0fdf4',
+                  borderRadius: '6px',
+                  border: `2px solid ${testResult.input === testResult.output ? '#ef4444' : '#22c55e'}`
+                }}>
+                  <div style={{
+                    fontWeight: 'bold',
+                    color: testResult.input === testResult.output ? '#dc2626' : '#16a34a',
+                    marginBottom: '4px'
+                  }}>
+                    {testResult.input === testResult.output
+                      ? '⚠️ PROBLEM: Input und Output sind IDENTISCH - Llama hat NICHTS geändert!'
+                      : '✅ OK: Llama hat Änderungen vorgenommen'}
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#64748b' }}>
+                    Längenänderung: {testResult.output.length - testResult.input.length} Zeichen
+                    ({((testResult.output.length / testResult.input.length) * 100).toFixed(1)}% der Eingabe)
+                  </div>
+                </div>
+
+                {/* Removed Tokens (dictation commands converted) */}
+                {testResult.removedTokens.length > 0 && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '12px',
+                    backgroundColor: '#eff6ff',
+                    borderRadius: '6px',
+                    border: '1px solid #93c5fd'
+                  }}>
+                    <div style={{ fontSize: '13px', color: '#1e40af', fontWeight: '500', marginBottom: '4px' }}>
+                      🔄 Diktierbefehle konvertiert (Regex-Schritt):
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#3b82f6' }}>
+                      {testResult.removedTokens.join(', ')}
+                    </div>
+                  </div>
+                )}
+
+                {/* Notes */}
+                {testResult.notes.length > 0 && (
+                  <div style={{ marginTop: '12px', fontSize: '13px', color: '#64748b' }}>
+                    <strong>Notizen:</strong> {testResult.notes.join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Test History */}
+            {testHistory.length > 1 && (
+              <div style={{ marginTop: '16px' }}>
+                <h5 style={{
+                  margin: '0 0 8px 0',
+                  color: '#6b21a8',
+                  fontSize: '14px'
+                }}>
+                  📜 Letzte Tests ({testHistory.length})
+                </h5>
+                <div style={{
+                  display: 'flex',
+                  gap: '8px',
+                  flexWrap: 'wrap'
+                }}>
+                  {testHistory.slice(1).map((hist, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setTestInput(hist.input);
+                        setTestResult(hist);
+                      }}
+                      style={{
+                        padding: '6px 12px',
+                        backgroundColor: hist.guardrailStatus === 'passed' ? '#f0fdf4' :
+                                        hist.input === hist.output ? '#fef2f2' : '#fef3c7',
+                        border: `1px solid ${
+                          hist.guardrailStatus === 'passed' ? '#22c55e' :
+                          hist.input === hist.output ? '#ef4444' : '#f59e0b'
+                        }`,
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        color: '#475569'
+                      }}
+                      title={hist.input.substring(0, 100)}
+                    >
+                      {hist.input.substring(0, 30)}... ({hist.processingTimeMs}ms)
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Error Display */}
         {state.error && (
@@ -1320,20 +1785,30 @@ JSON:`;
               </div>
 
               {/* Settings Link */}
-              <div style={{ marginTop: '32px' }}>
+              <div style={{
+                marginTop: '32px',
+                padding: '16px',
+                backgroundColor: '#fef3c7',
+                border: '1px solid #f59e0b',
+                borderRadius: '8px'
+              }}>
+                <p style={{ fontSize: '13px', color: '#92400e', marginBottom: '8px' }}>
+                  Stil-Profil neu erstellen?
+                </p>
                 <button
                   onClick={resetExamplesAndProfile}
                   style={{
-                    background: 'none',
+                    backgroundColor: '#f59e0b',
+                    color: 'white',
                     border: 'none',
-                    color: '#94a3b8',
+                    borderRadius: '6px',
                     fontSize: '13px',
                     cursor: 'pointer',
-                    textDecoration: 'underline',
-                    padding: '4px 8px'
+                    padding: '8px 16px',
+                    fontWeight: '500'
                   }}
                 >
-                  Beispiel-Dokumente zurücksetzen
+                  Beispiele zurücksetzen
                 </button>
               </div>
 
@@ -1471,14 +1946,14 @@ JSON:`;
             </div>
           )}
 
-          {/* Processing State */}
+          {/* Processing State (Whisper) */}
           {state.step === 'processing' && (
             <div>
               <div style={{ fontSize: '64px', marginBottom: '16px', animation: 'spin 2s linear infinite' }}>
-                ⚙️
+                🎧
               </div>
               <h2 style={{ fontSize: '24px', color: '#3b82f6', marginBottom: '16px' }}>
-                Verarbeitung...
+                Whisper Transkription...
               </h2>
               <p style={{ color: '#64748b', fontSize: '16px' }}>{processingProgress}</p>
               <div style={{
@@ -1497,7 +1972,131 @@ JSON:`;
                 }} />
               </div>
               <p style={{ color: '#94a3b8', fontSize: '13px', marginTop: '16px' }}>
-                Bitte warten Sie, während die KI Ihr Diktat verarbeitet...
+                Bitte warten Sie, während Whisper die Sprache erkennt...
+              </p>
+            </div>
+          )}
+
+          {/* Transcribed State - Show raw transcript, user can proceed to Llama */}
+          {state.step === 'transcribed' && (
+            <div>
+              <div style={{ fontSize: '48px', marginBottom: '12px' }}>📝</div>
+              <h2 style={{ fontSize: '22px', color: '#3b82f6', marginBottom: '8px' }}>
+                Whisper Transkription abgeschlossen!
+              </h2>
+              <p style={{ color: '#64748b', marginBottom: '20px', fontSize: '14px' }}>
+                Prüfen Sie den Text und klicken Sie "Weiter" für die Llama Formatierung.
+              </p>
+
+              {/* Raw Transcript Display */}
+              <div style={{
+                backgroundColor: '#f1f5f9',
+                border: '2px solid #3b82f6',
+                borderRadius: '8px',
+                padding: '16px',
+                marginBottom: '20px',
+                textAlign: 'left',
+                maxHeight: '400px',
+                overflowY: 'auto'
+              }}>
+                <h4 style={{ color: '#1e40af', marginBottom: '12px', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  🎧 Whisper Roh-Transkript ({state.rawTranscript.length} Zeichen):
+                </h4>
+                <pre style={{
+                  backgroundColor: 'white',
+                  padding: '16px',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontFamily: 'inherit',
+                  margin: 0,
+                  lineHeight: '1.6',
+                  color: '#1e293b'
+                }}>
+                  {state.rawTranscript}
+                </pre>
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{
+                display: 'flex',
+                gap: '12px',
+                justifyContent: 'center',
+                flexWrap: 'wrap'
+              }}>
+                <button
+                  onClick={proceedToFormatting}
+                  style={{
+                    padding: '14px 28px',
+                    backgroundColor: '#8b5cf6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    boxShadow: '0 4px 14px rgba(139, 92, 246, 0.4)'
+                  }}
+                >
+                  🦙 Weiter zu Llama Formatierung
+                </button>
+                <button
+                  onClick={resetWorkflow}
+                  style={{
+                    padding: '14px 24px',
+                    backgroundColor: '#f1f5f9',
+                    color: '#475569',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '16px',
+                    fontWeight: '500',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  ❌ Abbrechen
+                </button>
+              </div>
+
+              <p style={{ color: '#94a3b8', fontSize: '13px', marginTop: '16px' }}>
+                💡 Tipp: Wenn Whisper langsam war, liegt das Problem dort. Wenn die Transkription schnell war, liegt es an Llama.
+              </p>
+            </div>
+          )}
+
+          {/* Formatting State (Llama) */}
+          {state.step === 'formatting' && (
+            <div>
+              <div style={{ fontSize: '64px', marginBottom: '16px', animation: 'spin 2s linear infinite' }}>
+                🦙
+              </div>
+              <h2 style={{ fontSize: '24px', color: '#8b5cf6', marginBottom: '16px' }}>
+                Llama Formatierung...
+              </h2>
+              <p style={{ color: '#64748b', fontSize: '16px' }}>{processingProgress}</p>
+              <div style={{
+                width: '300px',
+                height: '6px',
+                backgroundColor: '#e2e8f0',
+                borderRadius: '3px',
+                margin: '24px auto',
+                overflow: 'hidden'
+              }}>
+                <div style={{
+                  width: '50%',
+                  height: '100%',
+                  backgroundColor: '#8b5cf6',
+                  animation: 'loading 1.5s infinite'
+                }} />
+              </div>
+              <p style={{ color: '#94a3b8', fontSize: '13px', marginTop: '16px' }}>
+                Llama korrigiert Grammatik und fügt Überschriften ein...
               </p>
             </div>
           )}
@@ -1512,6 +2111,97 @@ JSON:`;
               <p style={{ color: '#64748b', marginBottom: '20px', fontSize: '14px' }}>
                 Speichern Sie das Dokument oder fordern Sie Änderungen an.
               </p>
+
+              {/* DEBUG: Raw Transcript Button */}
+              <div style={{ marginBottom: '16px' }}>
+                <button
+                  onClick={() => setShowRawTranscript(!showRawTranscript)}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#ef4444',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '500'
+                  }}
+                >
+                  🔍 DEBUG: {showRawTranscript ? 'Roh-Transkript ausblenden' : 'Roh-Transkript anzeigen (vor Llama)'}
+                </button>
+              </div>
+
+              {/* DEBUG: Raw Transcript Display */}
+              {showRawTranscript && rawTranscriptDebug && (
+                <div style={{
+                  backgroundColor: '#fef2f2',
+                  border: '2px solid #ef4444',
+                  borderRadius: '8px',
+                  padding: '16px',
+                  marginBottom: '20px',
+                  textAlign: 'left'
+                }}>
+                  <h4 style={{ color: '#dc2626', marginBottom: '8px', fontSize: '14px' }}>
+                    1. RAW WHISPER OUTPUT (vor Llama):
+                  </h4>
+                  <pre style={{
+                    backgroundColor: '#1f2937',
+                    color: '#f9fafb',
+                    padding: '12px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: '200px',
+                    overflow: 'auto',
+                    fontFamily: 'monospace'
+                  }}>
+                    {rawTranscriptDebug}
+                  </pre>
+                  <p style={{ color: '#dc2626', fontSize: '12px', marginTop: '8px' }}>
+                    Länge: {rawTranscriptDebug.length} Zeichen
+                  </p>
+
+                  <h4 style={{ color: '#16a34a', marginBottom: '8px', marginTop: '16px', fontSize: '14px' }}>
+                    2. NACH LLAMA (formattedText - wird gespeichert):
+                  </h4>
+                  <pre style={{
+                    backgroundColor: '#1f2937',
+                    color: '#86efac',
+                    padding: '12px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    maxHeight: '200px',
+                    overflow: 'auto',
+                    fontFamily: 'monospace'
+                  }}>
+                    {state.formattedText}
+                  </pre>
+                  <p style={{ color: '#16a34a', fontSize: '12px', marginTop: '8px' }}>
+                    Länge: {state.formattedText.length} Zeichen
+                  </p>
+
+                  <div style={{
+                    marginTop: '16px',
+                    padding: '12px',
+                    backgroundColor: rawTranscriptDebug === state.formattedText ? '#fef2f2' : '#f0fdf4',
+                    borderRadius: '6px',
+                    border: rawTranscriptDebug === state.formattedText ? '2px solid #ef4444' : '2px solid #22c55e'
+                  }}>
+                    <p style={{
+                      margin: 0,
+                      fontWeight: 'bold',
+                      color: rawTranscriptDebug === state.formattedText ? '#dc2626' : '#16a34a'
+                    }}>
+                      {rawTranscriptDebug === state.formattedText
+                        ? '⚠️ PROBLEM: Texte sind IDENTISCH - Llama hat nichts geändert!'
+                        : '✅ OK: Texte sind unterschiedlich - Llama hat gearbeitet'}
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Pending Format Indicator */}
               {pendingFormatSpec && Object.keys(pendingFormatSpec).length > 0 && (

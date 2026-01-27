@@ -1,5 +1,6 @@
 // Style Profile Commands - Manages example document analysis and style learning
-use tauri::command;
+use tauri::{command, AppHandle};
+use tauri_plugin_dialog::DialogExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Command;
@@ -234,8 +235,7 @@ pub async fn get_style_profile_prompt() -> Result<String, String> {
 
     let mut prompt = String::new();
 
-    prompt.push_str("ABSCHNITTS-STRUKTUR DES GUTACHTENS:\n");
-    prompt.push_str("(Verwende diese Reihenfolge für die Überschriften)\n\n");
+    prompt.push_str("ERLAUBTE ÜBERSCHRIFTEN (in dieser Reihenfolge einfügen):\n\n");
 
     let required_sections: Vec<_> = profile.sections.iter()
         .filter(|s| s.is_required)
@@ -245,17 +245,207 @@ pub async fn get_style_profile_prompt() -> Result<String, String> {
         .filter(|s| !s.is_required)
         .collect();
 
-    prompt.push_str("PFLICHT-ABSCHNITTE:\n");
     for (i, section) in required_sections.iter().enumerate() {
-        prompt.push_str(&format!("  {}. {}\n", i + 1, section.display_name));
+        prompt.push_str(&format!("{}. {}\n", i + 1, section.display_name));
     }
 
     if !optional_sections.is_empty() {
-        prompt.push_str("\nOPTIONALE ABSCHNITTE (nur wenn im Diktat vorhanden):\n");
+        prompt.push_str("\nOptional:\n");
         for section in &optional_sections {
-            prompt.push_str(&format!("  - {}\n", section.display_name));
+            prompt.push_str(&format!("- {}\n", section.display_name));
         }
     }
 
     Ok(prompt)
+}
+
+/// Get the path to the template DOCX file
+fn get_template_path() -> Result<PathBuf, String> {
+    Ok(get_style_profile_dir()?.join("profile_template.docx"))
+}
+
+/// Get the path to the approved template marker file
+fn get_approved_marker_path() -> Result<PathBuf, String> {
+    Ok(get_style_profile_dir()?.join(".template_approved"))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TemplateInfo {
+    pub exists: bool,
+    pub template_path: String,
+    pub is_approved: bool,
+    pub sections: Vec<String>,
+    pub formatting: Option<FormattingInfo>,
+}
+
+/// Get information about the generated template
+#[command]
+pub async fn get_template_info() -> Result<TemplateInfo, String> {
+    let template_path = get_template_path()?;
+    let approved_marker = get_approved_marker_path()?;
+    let profile_path = get_style_profile_path()?;
+
+    if !template_path.exists() {
+        return Ok(TemplateInfo {
+            exists: false,
+            template_path: template_path.to_string_lossy().to_string(),
+            is_approved: false,
+            sections: Vec::new(),
+            formatting: None,
+        });
+    }
+
+    // Check if template is approved
+    let is_approved = approved_marker.exists();
+
+    // Load profile to get sections
+    let mut sections = Vec::new();
+    let mut formatting = None;
+
+    if profile_path.exists() {
+        if let Ok(content) = fs::read_to_string(&profile_path) {
+            if let Ok(profile) = serde_json::from_str::<Value>(&content) {
+                // Extract section names
+                if let Some(section_arr) = profile.get("sections").and_then(|v| v.as_array()) {
+                    for section in section_arr {
+                        if let Some(name) = section.get("display_name").and_then(|v| v.as_str()) {
+                            sections.push(name.to_string());
+                        }
+                    }
+                }
+
+                // Extract formatting
+                if let Some(fmt) = profile.get("formatting") {
+                    formatting = Some(FormattingInfo {
+                        font_family: fmt.get("font_family")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Times New Roman")
+                            .to_string(),
+                        font_size_pt: fmt.get("font_size_pt")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(12.0) as f32,
+                        line_spacing: fmt.get("line_spacing")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(1.15) as f32,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(TemplateInfo {
+        exists: true,
+        template_path: template_path.to_string_lossy().to_string(),
+        is_approved,
+        sections,
+        formatting,
+    })
+}
+
+/// Get the template DOCX file as bytes for download
+#[command]
+pub async fn download_template() -> Result<Vec<u8>, String> {
+    let template_path = get_template_path()?;
+
+    if !template_path.exists() {
+        return Err("Template file not found. Please analyze documents first.".to_string());
+    }
+
+    fs::read(&template_path)
+        .map_err(|e| format!("Failed to read template file: {}", e))
+}
+
+/// Save template to user-selected location with dialog
+#[command]
+pub async fn save_template_with_dialog(app: AppHandle) -> Result<String, String> {
+    let template_path = get_template_path()?;
+
+    if !template_path.exists() {
+        return Err("Template file not found. Please analyze documents first.".to_string());
+    }
+
+    // Get default Documents folder
+    let default_dir = dirs::document_dir()
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Show save dialog
+    let file_path = app.dialog()
+        .file()
+        .set_file_name("gutachten_vorlage.docx")
+        .set_directory(&default_dir)
+        .add_filter("Word Dokument", &["docx"])
+        .add_filter("Alle Dateien", &["*"])
+        .set_title("Vorlage speichern unter...")
+        .blocking_save_file();
+
+    let output_path = match file_path {
+        Some(path) => PathBuf::from(path.to_string()),
+        None => return Err("Speichern abgebrochen".to_string())
+    };
+
+    // Copy template to selected location
+    fs::copy(&template_path, &output_path)
+        .map_err(|e| format!("Fehler beim Speichern: {}", e))?;
+
+    println!("Template saved to: {}", output_path.display());
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+/// Upload a corrected template DOCX file
+#[command]
+pub async fn upload_corrected_template(
+    file_data: Vec<u8>,
+) -> Result<String, String> {
+    let template_path = get_template_path()?;
+    let profile_dir = get_style_profile_dir()?;
+
+    // Ensure directory exists
+    fs::create_dir_all(&profile_dir)
+        .map_err(|e| format!("Failed to create profile directory: {}", e))?;
+
+    // Backup the old template
+    if template_path.exists() {
+        let backup_path = profile_dir.join("profile_template_backup.docx");
+        let _ = fs::rename(&template_path, &backup_path);
+        println!("Backed up old template to: {}", backup_path.display());
+    }
+
+    // Write the new template
+    fs::write(&template_path, file_data)
+        .map_err(|e| format!("Failed to write template file: {}", e))?;
+
+    // Clear the approved marker (user needs to re-approve)
+    let approved_marker = get_approved_marker_path()?;
+    let _ = fs::remove_file(&approved_marker);
+
+    println!("Corrected template uploaded: {}", template_path.display());
+
+    Ok(template_path.to_string_lossy().to_string())
+}
+
+/// Approve the current template for use
+#[command]
+pub async fn approve_template() -> Result<(), String> {
+    let template_path = get_template_path()?;
+    let approved_marker = get_approved_marker_path()?;
+
+    if !template_path.exists() {
+        return Err("Template file not found. Please analyze documents first.".to_string());
+    }
+
+    // Create the approved marker file
+    fs::write(&approved_marker, chrono::Utc::now().to_rfc3339())
+        .map_err(|e| format!("Failed to create approval marker: {}", e))?;
+
+    println!("Template approved at: {}", chrono::Utc::now().to_rfc3339());
+
+    Ok(())
+}
+
+/// Check if the template has been approved
+#[command]
+pub async fn is_template_approved() -> Result<bool, String> {
+    let approved_marker = get_approved_marker_path()?;
+    Ok(approved_marker.exists())
 }
