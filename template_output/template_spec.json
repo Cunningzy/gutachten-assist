@@ -1,0 +1,667 @@
+{
+  "version": "1.0",
+  "created_at": "2026-01-27T14:05:09.815258",
+  "family_id": "default",
+  "family_name": "Default Template",
+  "anchors": [
+    {
+      "id": "gutachterliche_fragestellung",
+      "canonical_text": "Gutachterliche Fragestellung",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Gutachterliche Fragestellung"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal",
+        "Heading 2"
+      ]
+    },
+    {
+      "id": "1._anamnese",
+      "canonical_text": "1. Anamnese",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "1. Anamnese"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "2._untersuchungsbefunde",
+      "canonical_text": "2. Untersuchungsbefunde",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "2. Untersuchungsbefunde:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Textkörper 21"
+      ]
+    },
+    {
+      "id": "3._diagnosen",
+      "canonical_text": "3. Diagnosen",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "3. Diagnosen:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "diagnosen",
+      "canonical_text": "Diagnosen",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Diagnosen:",
+        "Diagnose:"
+      ],
+      "occurrence_rate": 4.5,
+      "styles": [
+        "Body Text"
+      ]
+    },
+    {
+      "id": "4._epikrise",
+      "canonical_text": "4. Epikrise",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "4. Epikrise",
+        "4. Epikrise:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "5._sozialmedizinische_leistungsbeurteilung",
+      "canonical_text": "5. Sozialmedizinische Leistungsbeurteilung",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "5. Sozialmedizinische Leistungsbeurteilung:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "1.1_anamnese_medizinischer_daten",
+      "canonical_text": "1.1 Anamnese medizinischer Daten",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "1. 1 Anamnese medizinischer Daten"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "1.2_biografische_anamnese",
+      "canonical_text": "1.2 Biografische Anamnese",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "1.2 Biografische Anamnese:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Body Text"
+      ]
+    },
+    {
+      "id": "familienanamnese",
+      "canonical_text": "Familienanamnese",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Familienanamnese"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Heading 2"
+      ]
+    },
+    {
+      "id": "eigenanamnese",
+      "canonical_text": "Eigenanamnese",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Eigenanamnese:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "vegetative_anamnese",
+      "canonical_text": "Vegetative Anamnese",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Vegetative Anamnese:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "aktuelle_beschwerden",
+      "canonical_text": "Aktuelle Beschwerden",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Aktuelle Beschwerden:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "aktuelle_medikation",
+      "canonical_text": "Aktuelle Medikation",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Aktuelle Medikation:",
+        "Aktuelle Medikation"
+      ],
+      "occurrence_rate": 0.875,
+      "styles": [
+        "Body Text"
+      ]
+    },
+    {
+      "id": "therapie_und_behandelnde_ärzte",
+      "canonical_text": "Therapie und behandelnde Ärzte",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Therapie und behandelnde Ärzte:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Body Text"
+      ]
+    },
+    {
+      "id": "psychischer_befund",
+      "canonical_text": "Psychischer Befund",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Psychischer Befund:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "neurologischer/körperlicher_untersuchungsbefund",
+      "canonical_text": "Neurologischer/körperlicher Untersuchungsbefund",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Neurologischer/körperlicher Untersuchungsbefund:"
+      ],
+      "occurrence_rate": 1.0,
+      "styles": [
+        "Normal"
+      ]
+    },
+    {
+      "id": "hamilton_depression_scale",
+      "canonical_text": "Hamilton Depression Scale",
+      "match_mode": "fuzzy",
+      "min_similarity": 0.88,
+      "variants_seen": [
+        "Hamilton Depression Scale:"
+      ],
+      "occurrence_rate": 0.875,
+      "styles": [
+        "Normal",
+        "Body Text 2"
+      ]
+    }
+  ],
+  "skeleton": [
+    {
+      "type": "fixed",
+      "id": "gutachterliche_fragestellung_heading",
+      "paragraphs": [
+        {
+          "text": "Gutachterliche Fragestellung",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "gutachterliche_fragestellung_body",
+      "section_name": "Gutachterliche Fragestellung",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "1._anamnese_heading",
+      "paragraphs": [
+        {
+          "text": "1. Anamnese",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "1._anamnese_body",
+      "section_name": "1. Anamnese",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "2._untersuchungsbefunde_heading",
+      "paragraphs": [
+        {
+          "text": "2. Untersuchungsbefunde",
+          "style": "Textkörper 21"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "2._untersuchungsbefunde_body",
+      "section_name": "2. Untersuchungsbefunde",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "3._diagnosen_heading",
+      "paragraphs": [
+        {
+          "text": "3. Diagnosen",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "3._diagnosen_body",
+      "section_name": "3. Diagnosen",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "diagnosen_heading",
+      "paragraphs": [
+        {
+          "text": "Diagnosen",
+          "style": "Body Text"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "diagnosen_body",
+      "section_name": "Diagnosen",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "4._epikrise_heading",
+      "paragraphs": [
+        {
+          "text": "4. Epikrise",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "4._epikrise_body",
+      "section_name": "4. Epikrise",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "5._sozialmedizinische_leistungsbeurteilung_heading",
+      "paragraphs": [
+        {
+          "text": "5. Sozialmedizinische Leistungsbeurteilung",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "5._sozialmedizinische_leistungsbeurteilung_body",
+      "section_name": "5. Sozialmedizinische Leistungsbeurteilung",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "1.1_anamnese_medizinischer_daten_heading",
+      "paragraphs": [
+        {
+          "text": "1.1 Anamnese medizinischer Daten",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "1.1_anamnese_medizinischer_daten_body",
+      "section_name": "1.1 Anamnese medizinischer Daten",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "1.2_biografische_anamnese_heading",
+      "paragraphs": [
+        {
+          "text": "1.2 Biografische Anamnese",
+          "style": "Body Text"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "1.2_biografische_anamnese_body",
+      "section_name": "1.2 Biografische Anamnese",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "familienanamnese_heading",
+      "paragraphs": [
+        {
+          "text": "Familienanamnese",
+          "style": "Heading 2"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "familienanamnese_body",
+      "section_name": "Familienanamnese",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "eigenanamnese_heading",
+      "paragraphs": [
+        {
+          "text": "Eigenanamnese",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "eigenanamnese_body",
+      "section_name": "Eigenanamnese",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "vegetative_anamnese_heading",
+      "paragraphs": [
+        {
+          "text": "Vegetative Anamnese",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "vegetative_anamnese_body",
+      "section_name": "Vegetative Anamnese",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "aktuelle_beschwerden_heading",
+      "paragraphs": [
+        {
+          "text": "Aktuelle Beschwerden",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "aktuelle_beschwerden_body",
+      "section_name": "Aktuelle Beschwerden",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "aktuelle_medikation_heading",
+      "paragraphs": [
+        {
+          "text": "Aktuelle Medikation",
+          "style": "Body Text"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "aktuelle_medikation_body",
+      "section_name": "Aktuelle Medikation",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "therapie_und_behandelnde_ärzte_heading",
+      "paragraphs": [
+        {
+          "text": "Therapie und behandelnde Ärzte",
+          "style": "Body Text"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "therapie_und_behandelnde_ärzte_body",
+      "section_name": "Therapie und behandelnde Ärzte",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "psychischer_befund_heading",
+      "paragraphs": [
+        {
+          "text": "Psychischer Befund",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "psychischer_befund_body",
+      "section_name": "Psychischer Befund",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "neurologischer/körperlicher_untersuchungsbefund_heading",
+      "paragraphs": [
+        {
+          "text": "Neurologischer/körperlicher Untersuchungsbefund",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "neurologischer/körperlicher_untersuchungsbefund_body",
+      "section_name": "Neurologischer/körperlicher Untersuchungsbefund",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    },
+    {
+      "type": "fixed",
+      "id": "hamilton_depression_scale_heading",
+      "paragraphs": [
+        {
+          "text": "Hamilton Depression Scale",
+          "style": "Normal"
+        }
+      ]
+    },
+    {
+      "type": "slot",
+      "slot_id": "hamilton_depression_scale_body",
+      "section_name": "Hamilton Depression Scale",
+      "allowed_styles": [
+        "BODY",
+        "BULLET"
+      ],
+      "list_behavior": "bullets_allowed",
+      "optional": false
+    }
+  ],
+  "style_roles": {
+    "H1": "Heading 1",
+    "H2": "Heading 2",
+    "H3": "Heading 3",
+    "BODY": "Normal",
+    "BULLET": "Body Text",
+    "TITLE": "Title"
+  },
+  "kopfzeile": {
+    "content": "Deutschen Rentenversicherung Rheinland\nGutachten über Herr Ranft, Andreas, geb. 16.05.1966\nwohnhaft: Bruchstr. 28, 40882 Ratingen\nVersicherungsnummer 13 160566 R 026 vom 28.01.2025",
+    "variants": [
+      "Deutschen Rentenversicherung Rheinland\nGutachten über Herr Kalkan, Rifat, geb. 10.09.1966\nwohnhaft: Kolpingstr. 29, 47166 Duisburg\nVersicherungsnummer 58 100966 K 024 vom 04.12.2025",
+      "Deutschen Rentenversicherung Rheinland\nGutachten über Herr Ranft, Andreas, geb. 16.05.1966\nwohnhaft: Bruchstr. 28, 40882 Ratingen\nVersicherungsnummer 13 160566 R 026 vom 28.01.2025",
+      "Deutschen Rentenversicherung Rheinland\nGutachten über Herr Heydecke, Udo, geb. 10.02.1965\nwohnhaft: Uerdinger Str. 446, 47800 Krefeld \nVersicherungsnummer 13 100265 H 027 vom 26.05.2025",
+      "Deutschen Rentenversicherung Rheinland\nGutachten über Herr Grubba Andreas, geb. 14.06.1975\nwohnhaft: Heresbachstr. 40, 46459 Rees\nVersicherungsnummer 13 140675 G 035 vom 03.12.2025",
+      "Deutschen Rentenversicherung Rheinland\nGutachten über Frau Dohle, Claudia, geb. 07.06.1963\nwohnhaft: Krausenerstr. 11, 42719 Solingen\nVersicherungsnummer 13 070663 N 513 vom 09.01.2025"
+    ]
+  },
+  "fusszeile": {
+    "content": "15",
+    "variants": [
+      "15",
+      "14",
+      "2",
+      "1",
+      "16"
+    ]
+  },
+  "render_rules": {
+    "spacing_after_heading": 12,
+    "spacing_after_paragraph": 6,
+    "blank_line_before_section": true
+  },
+  "quality_metrics": {
+    "documents_analyzed": 8,
+    "fixed_blocks_found": 39,
+    "variable_blocks_found": 780,
+    "anchors_detected": 18,
+    "boilerplate_threshold": 0.85
+  }
+}

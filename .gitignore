@@ -81,3 +81,11 @@ src-tauri/user-data/uploads/
 # Test files
 test_quick.txt
 C*test_quick.txt
+
+# User's example templates (private patient data)
+example_templates/
+
+# Template extraction intermediates (large)
+template_output/doc_profiles/
+template_output/classification.json
+template_output/sequences.json
