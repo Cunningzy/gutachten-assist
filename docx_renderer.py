@@ -365,7 +365,7 @@ def create_base_template(template_spec: dict, output_path: str):
 # =============================================================================
 
 def main():
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 2:
         print("Usage:")
         print("  python docx_renderer.py render <template_spec.json> <content.json> <output.docx>")
         print("  python docx_renderer.py create-base <template_spec.json> <base_template.docx>")
@@ -373,6 +373,11 @@ def main():
         sys.exit(1)
 
     command = sys.argv[1]
+
+    # Check argument count for commands that need more args
+    if command in ["render", "create-base"] and len(sys.argv) < 4:
+        print("Error: Not enough arguments for this command")
+        sys.exit(1)
 
     if command == "render":
         template_spec_path = sys.argv[2]

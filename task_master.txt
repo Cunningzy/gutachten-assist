@@ -1,0 +1,314 @@
+================================================================================
+TASK MASTER: Gutachten Assistant - New Qwen-Based Workflow Implementation
+================================================================================
+Created: 2026-01-27
+Status: IN PROGRESS
+
+================================================================================
+COMPLETE WORKFLOW ARCHITECTURE
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 0: TEMPLATE SETUP (One-time, at first launch / onboarding)            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   User uploads 5-10 example Gutachten (.docx files)                         │
+│                           ↓                                                 │
+│   template_extractor.py (Phases 0-5)                                        │
+│     - Phase 0: Parse DOCX → DocProfile                                      │
+│     - Phase 0.5: Template Family Clustering (NEW)                           │
+│     - Phase 1: Normalize text (conservative - dates/IDs only)               │
+│     - Phase 2: Find anchors (fuzzy matching)                                │
+│     - Phase 3: Build skeleton (FixedBlock → Slot → FixedBlock)              │
+│     - Phase 4: Extract styles                                               │
+│     - Phase 5: Output TemplateSpec                                          │
+│                           ↓                                                 │
+│   template_spec.json (per family)                                           │
+│     - family_id, family_name                                                │
+│     - anchors: [{id, text, match_mode, min_similarity, styles}]             │
+│     - skeleton: [{type: "fixed"/"slot", slot_id, heading}]                  │
+│     - style_roles: {heading: {...}, body: {...}}                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 1: DICTATION WORKFLOW (Each Gutachten creation)                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Audio Recording / Audio File Upload                                       │
+│                           ↓                                                 │
+│   Whisper Large-v3 (German transcription)                                   │
+│                           ↓                                                 │
+│   Raw transcript (with "Punkt", "Komma", dictation commands)                │
+│                           ↓                                                 │
+│   Qwen2.5-7B-Instruct (qwen_structurer.py)                                  │
+│     - Step 1: Regex cleanup (Punkt→., Komma→,) [deterministic]              │
+│     - Step 2: Assign content to template slots                              │
+│     - Step 3: Mark unclear parts with {unclear:...}                         │
+│     - Step 4: Output structured JSON                                        │
+│                           ↓                                                 │
+│   Structured JSON:                                                          │
+│   {                                                                         │
+│     "slots": {                                                              │
+│       "fragestellung_body": ["paragraph1", "paragraph2"],                   │
+│       "anamnese_body": ["..."],                                             │
+│       "befund_body": ["..."],                                               │
+│       ...                                                                   │
+│     },                                                                      │
+│     "unclear_spans": [                                                      │
+│       {slot_id: "...", text: "...", reason: "garbled/ambiguous"}            │
+│     ],                                                                      │
+│     "missing_slots": ["sozialanamnese_body"]                                │
+│   }                                                                         │
+│                           ↓                                                 │
+│   docx_renderer.py + template_spec.json                                     │
+│     - Insert content into slots                                             │
+│     - Apply styles from template                                            │
+│     - Highlight unclear spans in yellow                                     │
+│     - Show placeholders for missing_slots                                   │
+│                           ↓                                                 │
+│   Final Gutachten.docx                                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+IMPLEMENTATION TASKS
+================================================================================
+
+------------------------------------------------------------------------------
+TASK 1: VERIFY/UPDATE TEMPLATE EXTRACTOR (template_extractor.py)
+------------------------------------------------------------------------------
+Status: DONE - verified working
+
+Checklist:
+[x] 1.1 Template Family Clustering (Phase 0.5)
+    - Cluster documents by style histogram + anchor fingerprints
+    - Produce one TemplateSpec per family
+    - Let user choose default family
+    - Files: template_extractor.py
+
+[ ] 1.2 Conservative Name Normalization
+    - Only normalize: dates, IDs, Aktenzeichen, Versicherungsnr
+    - DO NOT use generic <NAME> replacement for all capitalized words
+    - Only replace patterns: "Herr/Frau <Word>", "geb. <DATE>"
+    - Files: template_extractor.py
+
+[ ] 1.3 Fuzzy Anchor Matching
+    - Store anchors with: match_mode (exact|normalized|fuzzy)
+    - Add min_similarity threshold (default 0.88)
+    - Handle variations: "Aktuelle Beschwerden:" vs "Aktuelle Beschwerden"
+    - Files: template_extractor.py
+
+[ ] 1.4 Manual Numbering in Headings
+    - Keep numbers in text, not Word auto-numbering
+    - Define heading styles that match spacing/indentation
+    - Files: template_extractor.py, docx_renderer.py
+
+------------------------------------------------------------------------------
+TASK 2: VERIFY/UPDATE QWEN STRUCTURER (qwen_structurer.py)
+------------------------------------------------------------------------------
+Status: DONE - updated to load template_spec.json dynamically
+
+Checklist:
+[x] 2.1 Verify qwen_structurer.py exists and works
+    - Uses llama-server.exe (NOT llama_cpp Python binding)
+    - Port: 8766
+    - Model: qwen2.5-7b-instruct-q4_k_m.gguf
+
+[ ] 2.2 Verify JSON output format
+    - slots: {slot_id: [paragraphs]}
+    - unclear_spans: [{slot_id, text, reason}]
+    - missing_slots: [slot_ids]
+
+[ ] 2.3 Section order guardrail
+    - Allow empty slot arrays
+    - Output missing_sections list
+    - Don't invent content for missing sections
+
+[ ] 2.4 Worker mode (stdin/stdout JSON)
+    - Input: {"text": "..."}
+    - Output: {"slots": {...}, "unclear_spans": [...], "missing_slots": [...]}
+    - Commands: {"command": "ping"}, {"command": "shutdown"}
+
+------------------------------------------------------------------------------
+TASK 3: VERIFY/UPDATE DOCX RENDERER (docx_renderer.py)
+------------------------------------------------------------------------------
+Status: DONE - tested with --test flag
+
+Checklist:
+[x] 3.1 Verify docx_renderer.py exists and works
+    - Input: template_spec.json + content.json
+    - Output: formatted DOCX
+
+[ ] 3.2 Yellow highlighting for unclear spans
+    - Parse {unclear:...} markers OR use unclear_spans list
+    - Apply yellow background highlight
+
+[ ] 3.3 Handle missing slots
+    - Show placeholder text or skip section
+    - Don't invent content
+
+[ ] 3.4 Apply styles from template_spec
+    - heading styles
+    - body text styles
+    - spacing, fonts, etc.
+
+------------------------------------------------------------------------------
+TASK 4: UPDATE RUST BACKEND (llama_commands.rs, template_commands.rs)
+------------------------------------------------------------------------------
+Status: DONE - structure_gutachten_transcript uses Qwen, wait time = 90s
+
+Checklist:
+[x] 4.1 Update correct_german_grammar OR create new command
+    - Should call qwen_structurer.py, NOT llama_worker.py
+    - Or create new command: structure_and_render_gutachten
+
+[ ] 4.2 Verify template_commands.rs
+    - extract_template: calls template_extractor.py
+    - render_gutachten_docx: calls docx_renderer.py
+    - is_template_ready: checks template_spec.json exists
+
+[ ] 4.3 Update worker startup
+    - Wait for Qwen model to load (llama-server.exe startup ~30-90s)
+    - Ping until server_ready: true
+
+[ ] 4.4 Remove or deprecate llama_worker.py usage
+    - Old Llama grammar correction is no longer needed
+    - Qwen does structuring + cleanup in one step
+
+------------------------------------------------------------------------------
+TASK 5: UPDATE FRONTEND WORKFLOW (GutachtenWorkflowComponent.tsx)
+------------------------------------------------------------------------------
+Status: DONE - proceedToFormatting uses Qwen, saveAsDocx uses template renderer
+
+Checklist:
+[x] 5.1 Remove old Llama grammar correction flow (kept for chat feature only)
+    - Remove/bypass formatWithLlama()
+    - Remove correct_german_grammar calls
+
+[ ] 5.2 Implement new Qwen structuring flow
+    - After Whisper: call structure_gutachten_transcript
+    - Receive structured JSON
+    - Call render_gutachten_docx
+
+[ ] 5.3 Update UI states
+    - ready → recording → processing → transcribed → structuring → done
+    - Show progress: "Strukturiere mit Qwen..."
+    - Show unclear_spans count
+    - Show missing_slots warning
+
+[ ] 5.4 Remove "Mit Vorlage speichern" as separate button
+    - This should BE the main workflow, not a separate option
+
+------------------------------------------------------------------------------
+TASK 6: UPDATE ONBOARDING (FirstLaunchOnboarding.tsx)
+------------------------------------------------------------------------------
+Status: NEEDS UPDATE
+
+Checklist:
+[ ] 6.1 Integrate template extraction into onboarding
+    - After user uploads example documents
+    - Run template_extractor.py automatically
+    - Show progress: "Analysiere Vorlagen..."
+
+[ ] 6.2 Verify template is ready before allowing dictation
+    - Check is_template_ready()
+    - Show error if no template
+
+------------------------------------------------------------------------------
+TASK 7: CLEANUP OLD CODE
+------------------------------------------------------------------------------
+Status: TODO
+
+Checklist:
+[ ] 7.1 Deprecate/remove llama_worker.py
+    - No longer needed for main workflow
+    - Keep only if needed for other features
+
+[ ] 7.2 Deprecate/remove llama_grammar_correct.py
+    - Replaced by qwen_structurer.py
+
+[ ] 7.3 Clean up unused Llama model references
+    - llama-3.1-8b-instruct can be removed from models/
+    - Only keep qwen2.5-7b-instruct and whisper
+
+[ ] 7.4 Update CLAUDE.md with new architecture
+    - Document the Qwen-based workflow
+    - Remove references to Llama grammar correction
+
+
+================================================================================
+SUGGESTED TWEAKS (from user) - IMPLEMENTATION STATUS
+================================================================================
+
+1. Template Family Clustering
+   Status: IN template_extractor.py - NEEDS VERIFICATION
+   - Cluster by style histogram + anchor fingerprints
+   - One TemplateSpec per family
+
+2. Conservative Name Normalization
+   Status: NEEDS IMPLEMENTATION
+   - Only normalize dates/IDs/Aktenzeichen
+   - Don't replace all capitalized words with <NAME>
+
+3. Fuzzy Anchor Matching
+   Status: IN template_extractor.py - DONE
+   - match_mode: exact | normalized | fuzzy
+   - min_similarity: 0.88
+
+4. Section Order Guardrail / Missing Sections
+   Status: IN qwen_structurer.py - DONE
+   - missing_slots list in output
+   - Renderer doesn't invent content
+
+5. Manual Numbering in Headings
+   Status: IN template_extractor.py - DONE
+   - Numbers in text, not Word auto-numbering
+
+6. Machine-readable unclear_spans
+   Status: IN qwen_structurer.py - DONE
+   - unclear_spans: [{slot_id, text, reason}]
+   - UI can show count and jump to them
+
+
+================================================================================
+EXECUTION ORDER
+================================================================================
+
+1. First: Verify existing Python scripts work standalone
+   - Test template_extractor.py with example docs
+   - Test qwen_structurer.py with sample text
+   - Test docx_renderer.py with sample JSON
+
+2. Second: Update Rust backend
+   - Fix worker startup (wait for model)
+   - Route main workflow to Qwen, not Llama
+
+3. Third: Update frontend
+   - Change workflow to use Qwen structuring
+   - Remove old Llama grammar correction
+
+4. Fourth: Update onboarding
+   - Integrate template extraction
+
+5. Fifth: Cleanup
+   - Remove old Llama code
+   - Update documentation
+
+
+================================================================================
+CURRENT BLOCKERS
+================================================================================
+
+1. Rust worker startup only waits 500ms - Qwen needs 30-90s to load
+   FIXED: Updated to 90s max wait with ping loop
+
+2. Frontend still calls correct_german_grammar (Llama) instead of Qwen
+   FIXED: proceedToFormatting now calls TemplateService.structureTranscript (Qwen)
+
+3. Template extraction not integrated into onboarding
+   TODO: Call extract_template after example upload (Task 6)
+
+
+================================================================================

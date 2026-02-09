@@ -61,7 +61,15 @@ async fn main() {
             commands::approve_template,
             commands::is_template_approved,
             // Llama worker management
-            commands::shutdown_llama_worker
+            commands::shutdown_llama_worker,
+            commands::structure_gutachten_transcript,
+            // Template extraction and DOCX rendering
+            commands::extract_template,
+            commands::get_template_spec,
+            commands::save_template_spec,
+            commands::render_gutachten_docx,
+            commands::is_template_ready,
+            commands::get_template_slots
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();

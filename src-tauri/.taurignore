@@ -1,0 +1,3 @@
+# Ignore user data directory to prevent rebuilds on document uploads
+user-data/
+user-data/**

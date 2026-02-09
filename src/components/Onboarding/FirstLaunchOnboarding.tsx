@@ -12,6 +12,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import TemplateEditor from './TemplateEditor';
 
 interface UploadedDocument {
   id: string;
@@ -43,6 +44,45 @@ interface TemplateInfo {
   is_approved: boolean;
   sections: string[];
   formatting: FormattingInfo | null;
+}
+
+// New interface for template_spec.json data
+interface TemplateSpecAnchor {
+  id: string;
+  canonical_text: string;
+  occurrence_rate: number;
+  styles: string[];
+}
+
+interface TemplateSpecSlot {
+  type: 'fixed' | 'slot';
+  slot_id?: string;
+  section_name?: string;
+  id?: string;
+  paragraphs?: { text: string; style: string }[];
+}
+
+interface TemplateSpecData {
+  version: string;
+  family_id: string;
+  family_name: string;
+  anchors: TemplateSpecAnchor[];
+  skeleton: TemplateSpecSlot[];
+  style_roles: Record<string, string>;
+  quality_metrics: {
+    documents_analyzed: number;
+    fixed_blocks_found: number;
+    variable_blocks_found: number;
+    anchors_detected: number;
+  };
+}
+
+interface ExtractionResult {
+  success: boolean;
+  message: string;
+  template_spec_path?: string;
+  anchors_found: number;
+  documents_analyzed: number;
 }
 
 interface FirstLaunchOnboardingProps {
@@ -104,16 +144,14 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
   const [buildStatus, setBuildStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const templateInputRef = useRef<HTMLInputElement>(null);
 
   // Template review state
   const [showTemplateReview, setShowTemplateReview] = useState(false);
   const [templateInfo, setTemplateInfo] = useState<TemplateInfo | null>(null);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [isTemplateUploading, setIsTemplateUploading] = useState(false);
+  const [templateSpec, setTemplateSpec] = useState<TemplateSpecData | null>(null);
   const [isApproving, setIsApproving] = useState(false);
-  const [uploadSuccess, setUploadSuccess] = useState(false);
-  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [showTemplateEditor, setShowTemplateEditor] = useState(false);
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
 
   // Load previously uploaded documents
   useEffect(() => {
@@ -290,6 +328,10 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
         throw new Error(`Mindestens ${MIN_DOCUMENTS} Dokumente erforderlich.`);
       }
 
+      // Get the folder containing the uploaded documents
+      // All docs are in src-tauri/user-data/uploads/
+      const uploadsFolder = 'C:\\Users\\kalin\\Desktop\\gutachten-assistant\\src-tauri\\user-data\\uploads';
+
       setBuildProgress(20);
       setBuildStatus('Analysiere Dokumentstruktur...');
 
@@ -303,7 +345,22 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
         setBuildProgress(100);
         setBuildStatus('Vorlage erstellt!');
         await new Promise(resolve => setTimeout(resolve, 500));
-        // Show template review in dev mode
+        // Show template review in dev mode with mock data
+        setTemplateSpec({
+          version: '1.0',
+          family_id: 'default',
+          family_name: 'Default Template',
+          anchors: [
+            { id: 'familienanamnese', canonical_text: 'Familienanamnese', occurrence_rate: 1.0, styles: ['Heading 2'] },
+            { id: 'eigenanamnese', canonical_text: 'Eigenanamnese', occurrence_rate: 1.0, styles: ['Normal'] },
+          ],
+          skeleton: [
+            { type: 'slot', slot_id: 'familienanamnese_body', section_name: 'Familienanamnese' },
+            { type: 'slot', slot_id: 'eigenanamnese_body', section_name: 'Eigenanamnese' },
+          ],
+          style_roles: { H1: 'Heading 1', H2: 'Heading 2', BODY: 'Normal' },
+          quality_metrics: { documents_analyzed: 5, fixed_blocks_found: 10, variable_blocks_found: 50, anchors_detected: 5 }
+        });
         setTemplateInfo({
           exists: true,
           template_path: '/mock/template.docx',
@@ -316,26 +373,54 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
         return;
       }
 
-      setBuildProgress(40);
+      setBuildProgress(30);
       setBuildStatus('Extrahiere Abschnitte und Formatierung...');
 
-      // Call the StyleProfile analyzer
+      // Call the StyleProfile analyzer (for formatting info)
       const profile = await invoke('analyze_example_documents', {
         documentPaths
       });
 
+      setBuildProgress(50);
+      setBuildStatus('Extrahiere Template-Struktur mit KI...');
+
+      // NEW: Call template extraction to create template_spec.json
+      console.log('=== EXTRACTING TEMPLATE ===');
+      console.log('Input folder:', uploadsFolder);
+
+      const extractionResult = await invoke('extract_template', {
+        inputFolder: uploadsFolder,
+        outputFolder: null  // Uses default: template_output
+      }) as ExtractionResult;
+
+      console.log('Extraction result:', extractionResult);
+
+      if (!extractionResult.success) {
+        throw new Error(extractionResult.message);
+      }
+
       setBuildProgress(80);
+      setBuildStatus(`${extractionResult.anchors_found} Anker aus ${extractionResult.documents_analyzed} Dokumenten extrahiert...`);
+
+      // Load the generated template_spec.json
+      const spec = await invoke('get_template_spec') as TemplateSpecData;
+      console.log('Template spec loaded:', spec);
+      setTemplateSpec(spec);
+
+      setBuildProgress(90);
       setBuildStatus('Erstelle Vorlage...');
 
       await new Promise(resolve => setTimeout(resolve, 300));
 
       setBuildProgress(100);
-      setBuildStatus(`Vorlage erstellt! ${(profile as any).sections?.length || 0} Abschnitte erkannt.`);
+      setBuildStatus(`Template erstellt! ${spec.anchors.length} Abschnitte erkannt.`);
 
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Get template info and show review step
       const info = await invoke('get_template_info') as TemplateInfo;
+      // Override sections with the ones from template_spec
+      info.sections = spec.anchors.map(a => a.canonical_text);
       setTemplateInfo(info);
       setIsBuildingProfile(false);
       setShowTemplateReview(true);
@@ -346,71 +431,6 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
       setIsBuildingProfile(false);
       setBuildProgress(0);
       setBuildStatus('');
-    }
-  };
-
-  const downloadTemplate = async () => {
-    if (!(window as any).__TAURI_INTERNALS__?.invoke) {
-      alert('Download nur in der Desktop-App verfugbar');
-      return;
-    }
-
-    setIsDownloading(true);
-    setError(null);
-
-    try {
-      // Use Rust command with built-in save dialog
-      const savedPath = await invoke('save_template_with_dialog') as string;
-      console.log('Template saved to:', savedPath);
-
-    } catch (err: any) {
-      // Don't show error if user just cancelled
-      if (err && !err.toString().includes('abgebrochen')) {
-        console.error('Failed to download template:', err);
-        setError(`Fehler beim Herunterladen: ${err}`);
-      }
-    } finally {
-      setIsDownloading(false);
-    }
-  };
-
-  const handleTemplateUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-
-    const file = e.target.files[0];
-    if (!file.name.endsWith('.docx')) {
-      setError('Bitte nur .docx Dateien hochladen.');
-      return;
-    }
-
-    setIsTemplateUploading(true);
-    setError(null);
-    setUploadSuccess(false);
-
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const uint8Array = new Uint8Array(arrayBuffer);
-
-      await invoke('upload_corrected_template', {
-        fileData: Array.from(uint8Array)
-      });
-
-      // Refresh template info
-      const info = await invoke('get_template_info') as TemplateInfo;
-      setTemplateInfo(info);
-
-      // Show success notification
-      setUploadedFileName(file.name);
-      setUploadSuccess(true);
-
-    } catch (err) {
-      console.error('Failed to upload template:', err);
-      setError(`Fehler beim Hochladen: ${err}`);
-    } finally {
-      setIsTemplateUploading(false);
-      if (templateInputRef.current) {
-        templateInputRef.current.value = '';
-      }
     }
   };
 
@@ -430,6 +450,30 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
       console.error('Failed to approve template:', err);
       setError(`Fehler beim Genehmigen: ${err}`);
       setIsApproving(false);
+    }
+  };
+
+  // Handle saving edited template from TemplateEditor
+  const handleSaveTemplate = async (updatedSpec: TemplateSpecData) => {
+    setIsSavingTemplate(true);
+    setError(null);
+
+    try {
+      // Save the updated template spec to disk
+      await invoke('save_template_spec', {
+        specJson: JSON.stringify(updatedSpec, null, 2)
+      });
+
+      // Update local state
+      setTemplateSpec(updatedSpec);
+      setShowTemplateEditor(false);
+
+      console.log('Template saved successfully');
+    } catch (err) {
+      console.error('Failed to save template:', err);
+      setError(`Fehler beim Speichern des Templates: ${err}`);
+    } finally {
+      setIsSavingTemplate(false);
     }
   };
 
@@ -654,134 +698,210 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
                 </p>
               </div>
 
-              {/* Sections Preview */}
-              <div style={{
-                backgroundColor: 'white',
-                border: '1px solid #d1d5db',
-                borderRadius: '6px',
-                padding: '16px',
-                marginBottom: '20px',
-              }}>
-                <h4 style={{ margin: '0 0 12px 0', color: '#374151', fontSize: '0.95rem' }}>
-                  Erkannte Abschnitte ({templateInfo.sections.length}):
-                </h4>
-                {templateInfo.sections.length > 0 ? (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                    {templateInfo.sections.map((section, index) => (
-                      <span key={index} style={{
-                        backgroundColor: '#dbeafe',
-                        color: '#1e40af',
-                        padding: '4px 12px',
-                        borderRadius: '16px',
-                        fontSize: '0.85rem',
-                        fontWeight: '500',
+              {/* Template Spec Preview - Detailed View */}
+              {templateSpec && (
+                <div style={{
+                  backgroundColor: 'white',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  padding: '16px',
+                  marginBottom: '20px',
+                  maxHeight: '400px',
+                  overflowY: 'auto',
+                }}>
+                  {/* Quality Metrics */}
+                  <div style={{
+                    display: 'flex',
+                    gap: '16px',
+                    marginBottom: '16px',
+                    padding: '12px',
+                    backgroundColor: '#f0f9ff',
+                    borderRadius: '6px',
+                  }}>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#1e40af' }}>
+                        {templateSpec.quality_metrics.documents_analyzed}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Dokumente</div>
+                    </div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#059669' }}>
+                        {templateSpec.quality_metrics.anchors_detected}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Anker</div>
+                    </div>
+                    <div style={{ textAlign: 'center' }}>
+                      <div style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#7c3aed' }}>
+                        {templateSpec.skeleton.filter(s => s.type === 'slot').length}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>Slots</div>
+                    </div>
+                  </div>
+
+                  {/* Anchors (Section Headings) */}
+                  <h4 style={{ margin: '0 0 12px 0', color: '#374151', fontSize: '0.95rem' }}>
+                    Erkannte Abschnitts-Überschriften ({templateSpec.anchors.length}):
+                  </h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '16px' }}>
+                    {templateSpec.anchors.map((anchor, index) => (
+                      <div key={index} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '8px 12px',
+                        backgroundColor: '#f9fafb',
+                        borderRadius: '4px',
+                        border: '1px solid #e5e7eb',
                       }}>
-                        {section}
-                      </span>
+                        <span style={{ fontWeight: '500', color: '#1f2937' }}>
+                          {anchor.canonical_text}
+                        </span>
+                        <span style={{
+                          fontSize: '0.75rem',
+                          color: anchor.occurrence_rate >= 0.9 ? '#059669' : '#d97706',
+                          backgroundColor: anchor.occurrence_rate >= 0.9 ? '#d1fae5' : '#fef3c7',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                        }}>
+                          {(anchor.occurrence_rate * 100).toFixed(0)}%
+                        </span>
+                      </div>
                     ))}
                   </div>
-                ) : (
-                  <p style={{ color: '#6b7280', fontSize: '0.9rem', margin: 0 }}>
-                    Keine Abschnitte erkannt (wird beim Diktieren automatisch strukturiert)
-                  </p>
-                )}
 
-                {templateInfo.formatting && (
+                  {/* Skeleton Structure (Slots) */}
+                  <h4 style={{ margin: '0 0 12px 0', color: '#374151', fontSize: '0.95rem' }}>
+                    Template-Struktur (Reihenfolge):
+                  </h4>
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    padding: '12px',
+                    backgroundColor: '#f9fafb',
+                    borderRadius: '6px',
+                    fontFamily: 'monospace',
+                    fontSize: '0.8rem',
+                  }}>
+                    {templateSpec.skeleton.map((item, index) => (
+                      <div key={index} style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        color: item.type === 'fixed' ? '#6b7280' : '#1e40af',
+                      }}>
+                        <span style={{
+                          width: '50px',
+                          color: item.type === 'fixed' ? '#9ca3af' : '#3b82f6',
+                          fontWeight: '500',
+                        }}>
+                          {item.type === 'fixed' ? '[FIX]' : '[SLOT]'}
+                        </span>
+                        <span>
+                          {item.type === 'fixed'
+                            ? (item.paragraphs?.[0]?.text || item.id || '—')
+                            : (item.section_name || item.slot_id || '—')
+                          }
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Style Roles */}
                   <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e5e7eb' }}>
                     <h4 style={{ margin: '0 0 8px 0', color: '#374151', fontSize: '0.9rem' }}>
-                      Formatierung:
+                      Stil-Zuordnung:
                     </h4>
-                    <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: 0 }}>
-                      {templateInfo.formatting.font_family}, {templateInfo.formatting.font_size_pt}pt,
-                      Zeilenabstand {templateInfo.formatting.line_spacing.toFixed(2)}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              {/* Upload Success Notification */}
-              {uploadSuccess && uploadedFileName && (
-                <div style={{
-                  backgroundColor: '#dcfce7',
-                  border: '2px solid #22c55e',
-                  borderRadius: '8px',
-                  padding: '16px',
-                  marginBottom: '16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                }}>
-                  <div style={{ fontSize: '1.5rem' }}>✅</div>
-                  <div>
-                    <div style={{ fontWeight: '700', color: '#166534', marginBottom: '4px' }}>
-                      Korrigierte Vorlage hochgeladen!
-                    </div>
-                    <div style={{ fontSize: '0.9rem', color: '#15803d' }}>
-                      "{uploadedFileName}" wird ab jetzt verwendet.
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {Object.entries(templateSpec.style_roles).map(([role, style]) => (
+                        <span key={role} style={{
+                          fontSize: '0.75rem',
+                          padding: '4px 8px',
+                          backgroundColor: '#e0e7ff',
+                          color: '#3730a3',
+                          borderRadius: '4px',
+                        }}>
+                          {role}: {style}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Action Buttons */}
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-              }}>
-                {/* Download and Upload Row */}
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  <button
-                    onClick={downloadTemplate}
-                    disabled={isDownloading}
-                    style={{
-                      flex: 1,
-                      backgroundColor: 'white',
-                      color: '#1e40af',
-                      padding: '12px 16px',
-                      border: '2px solid #3b82f6',
-                      borderRadius: '6px',
-                      cursor: isDownloading ? 'not-allowed' : 'pointer',
-                      fontSize: '0.9rem',
-                      fontWeight: '600',
-                      opacity: isDownloading ? 0.6 : 1,
-                    }}
-                  >
-                    {isDownloading ? 'Wird heruntergeladen...' : 'Vorlage herunterladen'}
-                  </button>
+              {/* Fallback: Old sections preview if no templateSpec */}
+              {!templateSpec && templateInfo && (
+                <div style={{
+                  backgroundColor: 'white',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  padding: '16px',
+                  marginBottom: '20px',
+                }}>
+                  <h4 style={{ margin: '0 0 12px 0', color: '#374151', fontSize: '0.95rem' }}>
+                    Erkannte Abschnitte ({templateInfo.sections.length}):
+                  </h4>
+                  {templateInfo.sections.length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {templateInfo.sections.map((section, index) => (
+                        <span key={index} style={{
+                          backgroundColor: '#dbeafe',
+                          color: '#1e40af',
+                          padding: '4px 12px',
+                          borderRadius: '16px',
+                          fontSize: '0.85rem',
+                          fontWeight: '500',
+                        }}>
+                          {section}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p style={{ color: '#6b7280', fontSize: '0.9rem', margin: 0 }}>
+                      Keine Abschnitte erkannt (wird beim Diktieren automatisch strukturiert)
+                    </p>
+                  )}
 
-                  <button
-                    onClick={() => templateInputRef.current?.click()}
-                    disabled={isTemplateUploading}
-                    style={{
-                      flex: 1,
-                      backgroundColor: 'white',
-                      color: '#7c3aed',
-                      padding: '12px 16px',
-                      border: '2px solid #8b5cf6',
-                      borderRadius: '6px',
-                      cursor: isTemplateUploading ? 'not-allowed' : 'pointer',
-                      fontSize: '0.9rem',
-                      fontWeight: '600',
-                      opacity: isTemplateUploading ? 0.6 : 1,
-                    }}
-                  >
-                    {isTemplateUploading ? 'Wird hochgeladen...' : 'Korrigierte Version hochladen'}
-                  </button>
-                  <input
-                    ref={templateInputRef}
-                    type="file"
-                    accept=".docx"
-                    onChange={handleTemplateUpload}
-                    style={{ display: 'none' }}
-                  />
+                  {templateInfo.formatting && (
+                    <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: '1px solid #e5e7eb' }}>
+                      <h4 style={{ margin: '0 0 8px 0', color: '#374151', fontSize: '0.9rem' }}>
+                        Formatierung:
+                      </h4>
+                      <p style={{ color: '#6b7280', fontSize: '0.85rem', margin: 0 }}>
+                        {templateInfo.formatting.font_family}, {templateInfo.formatting.font_size_pt}pt,
+                        Zeilenabstand {templateInfo.formatting.line_spacing.toFixed(2)}
+                      </p>
+                    </div>
+                  )}
                 </div>
+              )}
 
-                {/* Approve Button */}
+              {/* Approve Button */}
+              {/* Action buttons */}
+              <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+                <button
+                  onClick={() => setShowTemplateEditor(true)}
+                  disabled={!templateSpec}
+                  style={{
+                    flex: 1,
+                    backgroundColor: 'white',
+                    color: '#4f46e5',
+                    padding: '14px 24px',
+                    border: '2px solid #4f46e5',
+                    borderRadius: '6px',
+                    cursor: templateSpec ? 'pointer' : 'not-allowed',
+                    fontSize: '1rem',
+                    fontWeight: '600',
+                    opacity: templateSpec ? 1 : 0.6,
+                  }}
+                >
+                  Template bearbeiten
+                </button>
                 <button
                   onClick={approveTemplate}
                   disabled={isApproving}
                   style={{
+                    flex: 1,
                     backgroundColor: '#22c55e',
                     color: 'white',
                     padding: '14px 24px',
@@ -793,7 +913,7 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
                     opacity: isApproving ? 0.6 : 1,
                   }}
                 >
-                  {isApproving ? 'Wird gespeichert...' : 'Es ist gut - Vorlage verwenden'}
+                  {isApproving ? 'Wird gespeichert...' : 'Template übernehmen'}
                 </button>
               </div>
 
@@ -804,8 +924,42 @@ const FirstLaunchOnboarding: React.FC<FirstLaunchOnboardingProps> = ({ onComplet
                 marginTop: '12px',
                 marginBottom: 0,
               }}>
-                Sie konnen die Vorlage herunterladen, in Word bearbeiten und dann die korrigierte Version hochladen.
+                Mit "Template bearbeiten" können Sie Abschnitte anpassen, neu ordnen oder löschen.
               </p>
+            </div>
+          )}
+
+          {/* Template Editor Modal */}
+          {showTemplateEditor && templateSpec && (
+            <div style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.7)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              zIndex: 1100,
+              padding: '20px',
+            }}>
+              <div style={{
+                backgroundColor: 'white',
+                borderRadius: '12px',
+                width: '95%',
+                maxWidth: '900px',
+                height: '90vh',
+                display: 'flex',
+                flexDirection: 'column',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+              }}>
+                <TemplateEditor
+                  templateSpec={templateSpec as any}
+                  onSave={handleSaveTemplate as any}
+                  onCancel={() => setShowTemplateEditor(false)}
+                />
+              </div>
             </div>
           )}
 

@@ -11,6 +11,12 @@ export interface GrammarCorrectionResponse {
   changes_made: string[];
   confidence: number;
   processing_time_ms: number;
+  guardrail_status?: string;
+  violations?: string[];
+  notes?: string[];
+  attempts?: number;
+  removed_tokens?: string[];
+  tokens_per_sec?: number;
 }
 
 export interface LlamaModelInfo {
@@ -19,6 +25,12 @@ export interface LlamaModelInfo {
   size_mb: number;
   model_name?: string;
   quantization?: string;
+}
+
+export interface ModelInfoResponse {
+  qwen: LlamaModelInfo;
+  llama: LlamaModelInfo;
+  primary_model: 'qwen' | 'llama' | 'none';
 }
 
 export class LlamaService {
@@ -146,5 +158,31 @@ export class LlamaService {
   static estimateProcessingTime(textLength: number): number {
     // Rough estimate: ~100 characters per second
     return Math.max(1, Math.ceil(textLength / 100));
+  }
+
+  /**
+   * Shutdown the Llama/Qwen worker process
+   */
+  static async shutdownWorker(): Promise<{ success: boolean; message: string }> {
+    try {
+      const result = await invoke('shutdown_llama_worker');
+      return result as { success: boolean; message: string };
+    } catch (error) {
+      console.error('Failed to shutdown worker:', error);
+      throw new Error(`Shutdown failed: ${error}`);
+    }
+  }
+
+  /**
+   * Get extended model info including Qwen and Llama
+   */
+  static async getExtendedModelInfo(): Promise<ModelInfoResponse> {
+    try {
+      const result = await invoke('get_llama_model_info');
+      return result as ModelInfoResponse;
+    } catch (error) {
+      console.error('Failed to get extended model info:', error);
+      throw new Error(`Failed to get model info: ${error}`);
+    }
   }
 }

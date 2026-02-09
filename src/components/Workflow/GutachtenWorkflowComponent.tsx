@@ -7,6 +7,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getExampleDocuments } from '../Onboarding/FirstLaunchOnboarding';
+import { TemplateService, StructuredContent } from '../../services/templateService';
 
 interface WorkflowState {
   step: 'ready' | 'recording' | 'processing' | 'transcribed' | 'formatting' | 'done';
@@ -176,6 +177,12 @@ const GutachtenWorkflowComponent: React.FC = () => {
   const [isTestRunning, setIsTestRunning] = useState(false);
   const [testHistory, setTestHistory] = useState<TestModeResult[]>([]);
 
+  // Template-based rendering state
+  const [isTemplateReady, setIsTemplateReady] = useState(false);
+  const [isStructuring, setIsStructuring] = useState(false);
+  const [structuredContent, setStructuredContent] = useState<StructuredContent | null>(null);
+  const [structuringProgress, setStructuringProgress] = useState('');
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -203,6 +210,22 @@ const GutachtenWorkflowComponent: React.FC = () => {
       setStyleProfileLoaded(true);
     };
     loadStyleProfile();
+  }, []);
+
+  // Check if template extraction has been done
+  useEffect(() => {
+    const checkTemplateReady = async () => {
+      try {
+        const ready = await TemplateService.isTemplateReady();
+        setIsTemplateReady(ready);
+        if (ready) {
+          console.log('Template spec found - structured DOCX rendering available');
+        }
+      } catch (err) {
+        console.log('Template not ready:', err);
+      }
+    };
+    checkTemplateReady();
   }, []);
 
   // Reset examples and StyleProfile - triggers onboarding again
@@ -736,7 +759,8 @@ JSON:`;
     }
   };
 
-  // Format with Llama (step 2) - called when user clicks "Weiter"
+  // Structure with Qwen (step 2) - called when user clicks "Weiter"
+  // NEW WORKFLOW: Qwen structures text into slots, then DOCX renderer creates document
   const proceedToFormatting = async () => {
     const rawTranscript = state.rawTranscript;
     if (!rawTranscript.trim()) {
@@ -744,22 +768,57 @@ JSON:`;
       return;
     }
 
+    // Check if template is ready
+    if (!isTemplateReady) {
+      setState(prev => ({ ...prev, error: 'Keine Vorlage gefunden. Bitte zuerst Beispiel-Gutachten hochladen.' }));
+      return;
+    }
+
     setState(prev => ({ ...prev, step: 'formatting' }));
-    setProcessingProgress('Llama: Text wird formatiert...');
+    setProcessingProgress('Qwen: Text wird strukturiert...');
+    setIsStructuring(true);
 
     try {
-      const formattedText = await formatWithLlama(rawTranscript);
+      // Step 1: Structure with Qwen
+      setStructuringProgress('Analysiere Gutachten-Struktur mit KI...');
+      console.log('=== SENDING TO QWEN STRUCTURER ===');
+      console.log('Raw transcript length:', rawTranscript.length);
 
-      setState(prev => ({ ...prev, step: 'done', formattedText }));
+      const structured = await TemplateService.structureTranscript(rawTranscript);
+      setStructuredContent(structured);
+
+      console.log('=== QWEN STRUCTURING RESULT ===');
+      console.log('Slots:', Object.keys(structured.slots));
+      console.log('Unclear spans:', structured.unclear_spans.length);
+      console.log('Missing slots:', structured.missing_slots);
+
+      // Step 2: Convert structured slots to display text
+      const displayText = convertSlotsToDisplayText(structured.slots);
+
+      // Step 3: Update state with structured result
+      setState(prev => ({ ...prev, step: 'done', formattedText: displayText }));
       setProcessingProgress('');
+      setIsStructuring(false);
+
+      // Show info about structuring result
+      const slotCount = Object.keys(structured.slots).length;
+      const unclearCount = structured.unclear_spans.length;
+      const missingCount = structured.missing_slots.length;
+
+      if (unclearCount > 0 || missingCount > 0) {
+        let infoMsg = `Strukturierung abgeschlossen: ${slotCount} Abschnitte erkannt.`;
+        if (unclearCount > 0) infoMsg += ` ${unclearCount} unklare Stellen.`;
+        if (missingCount > 0) infoMsg += ` ${missingCount} fehlende Abschnitte.`;
+        console.log(infoMsg);
+      }
 
       // Save as new dictation
       const now = new Date().toISOString();
       const newId = `dictation_${Date.now()}`;
       const newRecord: DictationRecord = {
         id: newId,
-        text: formattedText,
-        title: generateDictationTitle(formattedText),
+        text: displayText,
+        title: generateDictationTitle(displayText),
         createdAt: now,
         lastModifiedAt: now,
         chatMessages: [],
@@ -771,14 +830,38 @@ JSON:`;
       setCurrentDictationId(newId);
 
     } catch (error) {
-      console.error('Formatting error:', error);
+      console.error('Qwen structuring error:', error);
+      setIsStructuring(false);
       setState(prev => ({
         ...prev,
         step: 'transcribed',
-        error: `Llama Formatierung fehlgeschlagen: ${error}`
+        error: `Qwen Strukturierung fehlgeschlagen: ${error}`
       }));
       setProcessingProgress('');
     }
+  };
+
+  // Convert structured slots to display text for preview
+  // This displays all slots returned by Qwen, using the section_name from template_spec
+  const convertSlotsToDisplayText = (slots: Record<string, string[]>): string => {
+    const parts: string[] = [];
+
+    // Process all slots in the order they appear
+    // The slot order comes from Qwen which respects the template skeleton order
+    for (const [slotId, paragraphs] of Object.entries(slots)) {
+      if (paragraphs && paragraphs.length > 0) {
+        // Use TemplateService to get proper display name, or convert slot_id to readable heading
+        const heading = TemplateService.formatSlotName(slotId) ||
+                       slotId.replace(/_body$/, '')
+                             .replace(/_/g, ' ')
+                             .replace(/^\d+\.\s*/, '')
+                             .replace(/\b\w/g, c => c.toUpperCase());
+        parts.push(`\n${heading}\n`);
+        parts.push(paragraphs.join('\n\n'));
+      }
+    }
+
+    return parts.join('\n').trim();
   };
 
   // Handle audio file upload
@@ -927,7 +1010,8 @@ JSON:`;
     alert('Stil-Vorlage wurde aktualisiert!');
   };
 
-  // Save as DOCX file with styling - applies pending format spec if any
+  // Save as DOCX file with styling
+  // NEW: If we have structured content from Qwen, use template-based rendering
   const saveAsDocx = async () => {
     const text = state.formattedText;
     if (!text.trim()) {
@@ -938,13 +1022,40 @@ JSON:`;
     setIsSaving(true);
 
     try {
-      // First create the basic DOCX with text content
+      // NEW WORKFLOW: Use structured content with template renderer if available
+      if (structuredContent && isTemplateReady) {
+        console.log('=== SAVING WITH TEMPLATE RENDERER ===');
+        const result = await TemplateService.renderDocx(structuredContent);
+
+        if (result.success) {
+          let message = `Strukturiertes Gutachten gespeichert:\n${result.output_path}`;
+
+          const unclearCount = structuredContent.unclear_spans?.length || 0;
+          const missingCount = structuredContent.missing_slots?.length || 0;
+
+          if (unclearCount > 0) {
+            message += `\n\n${unclearCount} unklare Stellen wurden gelb markiert.`;
+          }
+          if (missingCount > 0) {
+            message += `\n\nFehlende Abschnitte: ${structuredContent.missing_slots.map(s => TemplateService.formatSlotName(s)).join(', ')}`;
+          }
+
+          alert(message);
+          setIsSaving(false);
+          return;
+        } else {
+          console.warn('Template rendering failed, falling back to simple save:', result.message);
+        }
+      }
+
+      // FALLBACK: Old method - simple DOCX with text content
+      console.log('=== SAVING WITH SIMPLE DOCX (fallback) ===');
       const result = await invoke('create_styled_docx', {
         text: text,
         fontFamily: styleInfo.fontFamily,
         fontSize: styleInfo.fontSize,
         lineSpacing: styleInfo.lineSpacing,
-        headerContent: styleInfo.headerContent || null  // Document header (top of every page)
+        headerContent: styleInfo.headerContent || null
       }) as string;
 
       // If we have pending format changes, apply them to the saved file
@@ -1012,6 +1123,8 @@ JSON:`;
     setPendingFormatSpec(null);
     setCurrentDictationId(null);
     setRawTranscriptDebug('');
+    setStructuredContent(null);
+    setStructuringProgress('');
   };
 
   // ============================================================
@@ -2248,7 +2361,7 @@ JSON:`;
                     boxShadow: pendingFormatSpec ? '0 4px 14px rgba(139, 92, 246, 0.4)' : '0 4px 14px rgba(37, 99, 235, 0.4)'
                   }}
                 >
-                  {isSaving ? '⏳' : pendingFormatSpec ? '🎨' : '💾'} {isSaving ? 'Speichern...' : pendingFormatSpec ? 'Mit Formatierung speichern' : 'Als Word speichern'}
+                  {isSaving ? '⏳' : structuredContent ? '📋' : '💾'} {isSaving ? 'Speichern...' : structuredContent ? 'Strukturiert speichern' : 'Als Word speichern'}
                 </button>
                 <button
                   onClick={resetWorkflow}

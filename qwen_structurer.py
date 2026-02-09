@@ -47,41 +47,37 @@ CONFIG = {
 # SYSTEM PROMPT
 # =============================================================================
 
-SYSTEM_PROMPT = """Du bist ein Strukturierer für deutsche medizinische Gutachten-Diktate.
+SYSTEM_PROMPT_TEMPLATE = """Du bist ein Strukturierer für deutsche medizinische Gutachten-Diktate.
 
 AUFGABE:
 1. Korrigiere Rechtschreibung, Grammatik, Zeichensetzung (minimale Änderungen)
 2. Wandle Diktierbefehle um: "Punkt"→".", "Komma"→",", "Absatz"→neuer Absatz
 3. Ordne den Text den passenden Abschnitten zu
-4. Markiere unklare Stellen mit {unclear:text}
+4. Markiere unklare Stellen mit {{unclear:text}}
 
-ABSCHNITTE (verwende diese slot_ids):
-- fragestellung_body: Warum wird begutachtet
-- familienanamnese_body: Familiengeschichte
-- eigenanamnese_body: Eigene Krankengeschichte
-- sozialanamnese_body: Soziale Situation
-- aktuelle_beschwerden_body: Jetzige Beschwerden
-- befund_body: Untersuchungsbefunde
-- diagnosen_body: Diagnosen
-- beurteilung_body: Beurteilung/Zusammenfassung
+VERFÜGBARE ABSCHNITTE (slot_ids):
+{slot_list}
 
 ABSOLUTE REGELN:
 1. Verwende NUR Inhalte aus dem Input - NIEMALS eigene medizinische Fakten erfinden
 2. Wenn unsicher, behalte Original-Wortlaut bei
 3. Wenn ein Abschnitt nicht im Text vorkommt, füge ihn zu missing_slots hinzu
-4. Markiere unverständliche/unklare Stellen mit {unclear:...}
+4. Markiere unverständliche/unklare Stellen mit {{unclear:...}}
 
 AUSGABE NUR als gültiges JSON:
-{
-  "slots": {
-    "fragestellung_body": ["Absatz 1", "Absatz 2"],
-    "eigenanamnese_body": ["..."]
-  },
+{{
+  "slots": {{
+    "slot_id_1": ["Absatz 1", "Absatz 2"],
+    "slot_id_2": ["..."]
+  }},
   "unclear_spans": [
-    {"slot_id": "...", "text": "...", "reason": "garbled/ambiguous/incomplete"}
+    {{"slot_id": "...", "text": "...", "reason": "garbled/ambiguous/incomplete"}}
   ],
-  "missing_slots": ["familienanamnese_body"]
-}"""
+  "missing_slots": ["slot_id_3"]
+}}"""
+
+# Path to template spec (loaded automatically)
+TEMPLATE_SPEC_PATH = os.path.join(os.path.dirname(__file__), "template_output", "template_spec.json")
 
 # =============================================================================
 # DICTATION CLEANUP (Regex preprocessing)
@@ -131,6 +127,26 @@ class QwenStructurer:
         self.server_process = None
         self.server_ready = False
         self.base_url = f"http://{CONFIG['server_host']}:{CONFIG['server_port']}"
+        self.template_spec = self._load_template_spec()
+        self.slot_names = self._get_slot_names(self.template_spec)
+        self.system_prompt = self._build_system_prompt()
+
+    def _load_template_spec(self) -> dict:
+        """Load template spec from file if available."""
+        if os.path.exists(TEMPLATE_SPEC_PATH):
+            try:
+                with open(TEMPLATE_SPEC_PATH, 'r', encoding='utf-8') as f:
+                    spec = json.load(f)
+                    print(f"[STRUCTURER] Loaded template spec with {len(spec.get('anchors', []))} anchors", file=sys.stderr)
+                    return spec
+            except Exception as e:
+                print(f"[STRUCTURER] Failed to load template spec: {e}", file=sys.stderr)
+        return None
+
+    def _build_system_prompt(self) -> str:
+        """Build system prompt with slot names from template."""
+        slot_list = "\n".join(f"- {slot}" for slot in self.slot_names)
+        return SYSTEM_PROMPT_TEMPLATE.format(slot_list=slot_list)
 
     def start_server(self) -> bool:
         """Start llama-server with Qwen model."""
@@ -205,7 +221,7 @@ class QwenStructurer:
 
         Args:
             transcript: Raw Whisper transcript
-            template_spec: Optional template spec for slot names
+            template_spec: Optional template spec for slot names (uses loaded spec if not provided)
 
         Returns:
             content.json structure
@@ -218,14 +234,9 @@ class QwenStructurer:
         if not self.server_ready:
             return self._fallback_structure(cleaned)
 
-        # Step 2: Build prompt
-        # If we have template_spec, use its slot names
-        slot_names = self._get_slot_names(template_spec)
-
+        # Step 2: Build prompt using loaded template spec
         prompt = f"""<|im_start|>system
-{SYSTEM_PROMPT}
-
-Verfügbare Abschnitte: {', '.join(slot_names)}
+{self.system_prompt}
 <|im_end|>
 <|im_start|>user
 Strukturiere diesen Gutachten-Text:
@@ -251,7 +262,7 @@ Strukturiere diesen Gutachten-Text:
             print(f"[STRUCTURER] Generated {tokens} tokens in {elapsed:.1f}s", file=sys.stderr)
 
             # Parse JSON from response
-            result = self._parse_response(content, slot_names)
+            result = self._parse_response(content, self.slot_names)
             result["metrics"] = {
                 "tokens_predicted": tokens,
                 "processing_time_s": elapsed,
@@ -263,26 +274,29 @@ Strukturiere diesen Gutachten-Text:
             print(f"[STRUCTURER] API error: {e}", file=sys.stderr)
             return self._fallback_structure(cleaned)
 
-    def _get_slot_names(self, template_spec: dict) -> list:
+    def _get_slot_names(self, template_spec: dict = None) -> list:
         """Extract slot names from template spec or use defaults."""
-        if template_spec and "skeleton" in template_spec:
+        spec = template_spec or self.template_spec if hasattr(self, 'template_spec') else None
+
+        if spec and "skeleton" in spec:
             slots = []
-            for item in template_spec["skeleton"]:
+            for item in spec["skeleton"]:
                 if item.get("type") == "slot":
                     slots.append(item.get("slot_id", ""))
             if slots:
                 return slots
 
-        # Default slots
+        # Default slots (fallback if no template)
         return [
-            "fragestellung_body",
+            "gutachterliche_fragestellung_body",
+            "1._anamnese_body",
             "familienanamnese_body",
             "eigenanamnese_body",
-            "sozialanamnese_body",
             "aktuelle_beschwerden_body",
-            "befund_body",
-            "diagnosen_body",
-            "beurteilung_body",
+            "2._untersuchungsbefunde_body",
+            "3._diagnosen_body",
+            "4._epikrise_body",
+            "5._sozialmedizinische_leistungsbeurteilung_body",
         ]
 
     def _parse_response(self, content: str, slot_names: list) -> dict:
@@ -366,31 +380,71 @@ Strukturiere diesen Gutachten-Text:
             self.server_ready = False
             print("[STRUCTURER] Server stopped", file=sys.stderr)
 
+    def handle_request(self, request: dict) -> dict:
+        """Handle a single request from the worker protocol."""
+        cmd = request.get("command")
+
+        if cmd == "ping":
+            return {"status": "ready", "server_ready": self.server_ready}
+        if cmd == "shutdown":
+            self.stop_server()
+            return {"status": "shutting_down"}
+        if cmd == "metrics":
+            return {"server_ready": self.server_ready}
+        if "text" in request:
+            return self.structure_transcript(request["text"])
+        return {"error": "Unknown request"}
+
+    def run(self):
+        """Main worker loop - reads from stdin, writes to stdout."""
+        print("[STRUCTURER] Starting Qwen structurer worker...", file=sys.stderr)
+
+        if not self.start_server():
+            print("[STRUCTURER] WARNING: Server failed to start", file=sys.stderr)
+
+        print("[STRUCTURER] Ready for requests", file=sys.stderr)
+
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+                response = self.handle_request(request)
+                print(json.dumps(response, ensure_ascii=False), flush=True)
+                if request.get("command") == "shutdown":
+                    break
+            except Exception as e:
+                print(json.dumps({"error": str(e)}), flush=True)
+
+        self.stop_server()
+        print("[STRUCTURER] Exiting", file=sys.stderr)
+
 
 # =============================================================================
 # CLI
 # =============================================================================
 
 def main():
-    """CLI interface for testing."""
-    if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python qwen_structurer.py <transcript_file>")
-        print("  python qwen_structurer.py --test")
-        sys.exit(1)
+    """CLI interface - supports both worker mode and direct testing."""
+    # Worker mode (no args) - run as stdin/stdout worker
+    if len(sys.argv) == 1:
+        structurer = QwenStructurer()
+        structurer.run()
+        return
 
+    # Test mode or file mode
     structurer = QwenStructurer()
 
     try:
         if sys.argv[1] == "--test":
-            # Test with sample text
             test_text = """
             Fragestellung punkt Die Begutachtung erfolgt auf Veranlassung der DRV Bund punkt
 
-            Eigenanamnese punkt Der Patient berichtet komma dass er seit 2019 unter Rückenschmerzen leidet punkt
-            Eine Operation wurde im Jahr 2020 durchgeführt punkt
+            Eigenanamnese punkt Der Patient berichtet komma dass er seit 2019 unter Rueckenschmerzen leidet punkt
+            Eine Operation wurde im Jahr 2020 durchgefuehrt punkt
 
-            Aktuelle Beschwerden punkt Aktuell klagt der Patient über Schmerzen im Bereich des unteren Rückens punkt
+            Aktuelle Beschwerden punkt Aktuell klagt der Patient ueber Schmerzen im Bereich des unteren Rueckens punkt
             Die Schmerzen strahlen in das linke Bein aus punkt
             """
             transcript = test_text
