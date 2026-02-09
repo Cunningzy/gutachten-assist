@@ -379,57 +379,6 @@ const GutachtenWorkflowComponent: React.FC = () => {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Format raw transcript using Llama with two-step pipeline + guardrails:
-  // Step 1: Regex cleanup of dictation commands (Python - deterministic)
-  // Step 2: Copy-editor correction only - minimal spelling/grammar fixes (LLM)
-  // Step 3: Guardrails check - rejects if LLM hallucinates or rewrites
-  // NO TEMPLATING - template insertion happens in DOCX generation (deterministic)
-  const formatWithLlama = async (rawText: string): Promise<string> => {
-    setProcessingProgress('Text wird bereinigt und korrigiert...');
-
-    try {
-      // Build simple prompt with marker - Python script handles the two-step pipeline
-      const prompt = buildFormattingPrompt(styleProfilePrompt) + rawText;
-
-      console.log('=== SENDING TO LLAMA (Two-Step Pipeline) ===');
-      console.log('Raw text length:', rawText.length);
-      console.log('First 200 chars:', rawText.substring(0, 200));
-
-      const result = await invoke('correct_german_grammar', {
-        text: prompt,
-        convertDictationCommands: false
-      }) as { corrected_text: string };
-
-      // DEBUG: Log full result
-      console.log('=== FULL LLAMA RESULT ===');
-      console.log('Result object:', JSON.stringify(result, null, 2));
-      console.log('corrected_text type:', typeof result.corrected_text);
-      console.log('corrected_text length:', result.corrected_text?.length);
-
-      // Check if we got a valid response - don't use || which treats "" as falsy
-      let cleanedText: string;
-      if (result.corrected_text !== undefined && result.corrected_text !== null && result.corrected_text.trim() !== '') {
-        cleanedText = result.corrected_text;
-        console.log('Using Llama corrected text');
-      } else {
-        console.warn('WARNING: Llama returned empty/null text, falling back to raw text');
-        cleanedText = rawText;
-      }
-
-      // Strip any markdown formatting that Llama might have added
-      cleanedText = stripMarkdownFormatting(cleanedText);
-
-      console.log('=== FINAL TEXT AFTER PROCESSING ===');
-      console.log('Final length:', cleanedText.length);
-      console.log('First 200 chars:', cleanedText.substring(0, 200));
-
-      return cleanedText;
-    } catch (error) {
-      console.error('Llama formatting failed:', error);
-      return rawText;
-    }
-  };
-
   // Strip markdown and HTML formatting from text
   const stripMarkdownFormatting = (text: string): string => {
     let cleaned = text;

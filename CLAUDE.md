@@ -1,7 +1,7 @@
 # claude.md - Gutachten Assistant Project Context
 
 **For Claude Coding Continuation - AI-Powered Medical Documentation Assistant**
-**Last Updated:** January 25, 2026
+**Last Updated:** February 9, 2026
 
 ---
 
@@ -27,9 +27,9 @@ Developing a **DSGVO-compliant, offline-first AI-powered DESKTOP APPLICATION** t
 
 ---
 
-## 🏗️ **TECHNICAL ARCHITECTURE** *(Updated January 25, 2026)*
+## 🏗️ **TECHNICAL ARCHITECTURE** *(Updated February 9, 2026)*
 
-### **COMPLETE AUDIO-TO-TEXT PIPELINE WITH GUARDRAILS**
+### **COMPLETE AUDIO-TO-DOCX PIPELINE**
 ```
 🎤 Microphone / 📁 Audio File Upload
     ↓
@@ -39,34 +39,34 @@ Tauri Commands (Rust Backend)
     ↓
 Python Subprocess → Whisper Large-v3 → German Transcription
     ↓
-TWO-STEP PIPELINE WITH GUARDRAILS:
+QWEN STRUCTURING PIPELINE:
   Step 1: Regex Cleanup (deterministic)
     - Convert "Punkt" → "."
     - Convert "Komma" → ","
     - etc.
-  Step 2: Copy-Editor LLM (minimal changes only)
-    - Fix spelling errors
-    - Fix grammar errors
-    - Fix punctuation
-    - NO rewriting, NO new sentences
-  Step 3: Guardrails Check
-    - Length ratio (0.5x - 1.5x)
-    - Banned phrases detection
-    - Similarity check (>60%)
-    - Sentence count check (+3 max)
-    - New words check (<10 significant)
+  Step 2: Qwen2.5-7B-Instruct (qwen_structurer.py)
+    - Assign content to template slots
+    - Mark unclear parts with {unclear:...}
+    - Output structured JSON with slots
     ↓
-Final Corrected German Medical Text
+Structured JSON:
+  { slots: {...}, unclear_spans: [...], missing_slots: [...] }
     ↓
-(Future) DOCX Template Insertion (deterministic, NOT LLM)
+docx_renderer.py + template_spec.json
+  - Insert content into slots
+  - Apply styles from template
+  - Highlight unclear spans in yellow
+    ↓
+Final Gutachten.docx
 ```
 
-### **KEY ARCHITECTURAL PRINCIPLE (January 2026)**
-**LLM = Copy-Editor ONLY. Template insertion = App Code (deterministic).**
+### **KEY ARCHITECTURAL PRINCIPLE (February 2026)**
+**Qwen = Structuring ONLY. DOCX generation = App Code (deterministic).**
 
-The LLM was previously hallucinating and rewriting text when asked to both correct AND format. The solution is strict separation:
-- **LLM does:** Spelling, grammar, punctuation fixes (minimal changes)
-- **App code does:** Template insertion, heading placement, DOCX generation
+The LLM assigns dictated content to template slots. The DOCX renderer then:
+- Applies the learned styles from template_spec.json
+- Inserts fixed blocks (headers, boilerplate)
+- Fills slots with structured content
 
 ### **DESKTOP APPLICATION Stack**
 - **Desktop Framework:** Tauri 2.0 + React + TypeScript + Rust Backend
@@ -76,7 +76,8 @@ The LLM was previously hallucinating and rewriting text when asked to both corre
 - **AI Components (Free/Open Source Only):**
   - OpenAI Whisper Large-v3 (German speech recognition via Python subprocess)
   - FFmpeg (professional audio conversion to 16kHz WAV)
-  - Llama 3.1 8B (German grammar correction - copy-editor mode only)
+  - Qwen2.5-7B-Instruct (Gutachten structuring - assigns content to template slots)
+  - Llama 3.2 3B (chat-based text revision feature)
   - spaCy + GERNERMED++ (German medical NER - planned)
 
 ### **Current DESKTOP APPLICATION Status**
@@ -87,61 +88,59 @@ The LLM was previously hallucinating and rewriting text when asked to both corre
 ✅ COMPLETE: Component 2.1B - Python Whisper virtual environment integration
 ✅ COMPLETE: Component 2.2A - Document upload UI for style learning
 ✅ COMPLETE: Component 2.2B - Document analysis engine with DOCX parsing
-✅ COMPLETE: Component 2.2C - Two-step pipeline with guardrails (NEW)
 ✅ COMPLETE: Component 2.3 - Full workflow integration
 ✅ COMPLETE: First-launch onboarding for example Gutachten collection
 ✅ COMPLETE: Audio file upload option (WAV, MP3, WebM, M4A, OGG, FLAC)
-✅ COMPLETE: StyleProfile system for learning user's formatting style
-✅ COMPLETE: Guardrails to prevent LLM hallucination (NEW)
+✅ COMPLETE: Template extraction system (template_extractor.py)
+✅ COMPLETE: Qwen-based structuring pipeline (qwen_structurer.py)
+✅ COMPLETE: DOCX rendering system (docx_renderer.py)
+📋 IN PROGRESS: Integrate template extraction into onboarding
 📋 PLANNED: OCR (Tesseract), Medical NER (spaCy + GERNERMED++)
-📋 PLANNED: Deterministic template insertion in DOCX generation
 ```
 
 ---
 
-## 🚧 **CURRENT DEVELOPMENT STATE (January 25, 2026)**
+## 🚧 **CURRENT DEVELOPMENT STATE (February 9, 2026)**
 
-### **Latest Session: Two-Step Pipeline with Guardrails**
+### **Latest Session: Qwen Structuring Pipeline**
 
-**Problem Solved:** LLM was either doing nothing OR completely rewriting the text (hallucinating a new Gutachten instead of just correcting).
+**New Architecture:** Replaced old Llama copy-editor with Qwen structuring pipeline.
 
-**Solution Implemented:**
-1. **Strict role separation** - LLM is copy-editor only, not a template filler
-2. **Two-step pipeline** - Regex cleanup first, then minimal LLM correction
-3. **Guardrails** - Automatic checks to reject hallucinated outputs
+**How It Works:**
+1. **Template Extraction** (one-time during onboarding)
+   - User uploads 5-10 example Gutachten
+   - `template_extractor.py` analyzes structure
+   - Outputs `template_spec.json` with anchors, skeleton, styles
 
-### **Guardrails System (llama_grammar_correct.py)**
+2. **Dictation Workflow** (each Gutachten)
+   - Audio → Whisper → Raw transcript
+   - Qwen assigns content to template slots
+   - `docx_renderer.py` creates final DOCX
 
-| Check | Threshold | Purpose |
-|-------|-----------|---------|
-| Length ratio | 0.5x - 1.5x | Reject if output too short/long |
-| Banned phrases | Not in input | Block "Zusammenfassend", "Beurteilung", etc. |
-| Similarity | >60% | Reject if too different from original |
-| Sentence count | +3 max | Block if too many new sentences added |
-| New words | <10 significant | Block if inventing new content |
-
-**Retry Logic:** If guardrails fail, retry with lower temperature. If still fails, return best attempt or original text.
-
-### **LLM System Prompt (Copy-Editor Mode)**
-
+### **Template Spec Structure**
+```json
+{
+  "anchors": [{"id": "anamnese", "text": "Anamnese:", ...}],
+  "skeleton": [
+    {"type": "fixed", "anchor_id": "header"},
+    {"type": "slot", "slot_id": "anamnese_body"},
+    ...
+  ],
+  "style_roles": {"heading": {...}, "body": {...}}
+}
 ```
-Du bist ein Korrekturleser für deutsche medizinische Texte.
 
-AUFTRAG:
-Schreibe den Text mit MINIMALEN Änderungen um:
-- Korrigiere Rechtschreibung, Grammatik, Zeichensetzung.
-- Normalisiere offensichtliche Tippfehler und Abstände.
-- Behalte die ursprüngliche Bedeutung, Fakten, Reihenfolge und Absatzstruktur.
-
-ABSOLUTE REGELN (STRENG):
-1) Füge KEINE neuen medizinischen Fakten, Diagnosen, Befunde hinzu.
-2) Erfinde KEINE Sätze, Zusammenfassungen, Beurteilungen.
-3) Ändere NICHT die Struktur: Absatzzahl und Reihenfolge müssen gleich bleiben.
-4) Schreibe NICHT stilistisch um.
-5) Du darfst durchschnittlich nur 1-3 Wörter pro Satz ändern.
-
-VERBOTENE WÖRTER (nur erlaubt wenn bereits im Input):
-- "Zusammenfassend", "Beurteilung", "Empfehlung", "Diagnose:", "Fazit"
+### **Qwen Structuring Output**
+```json
+{
+  "slots": {
+    "fragestellung_body": ["paragraph1", "paragraph2"],
+    "anamnese_body": ["..."],
+    ...
+  },
+  "unclear_spans": [{"slot_id": "...", "text": "...", "reason": "garbled"}],
+  "missing_slots": ["sozialanamnese_body"]
+}
 ```
 
 ### **Unified Gutachten Workflow - FULLY FUNCTIONAL**
@@ -218,18 +217,26 @@ Located in `style_profile_analyzer.py` and `FirstLaunchOnboarding.tsx`:
 
 ### **Backend Commands (Rust)**
 - `src-tauri/src/commands/audio_commands.rs` - Audio save/process commands
-- `src-tauri/src/commands/llama_commands.rs` - Grammar correction command
+- `src-tauri/src/commands/llama_commands.rs` - Qwen structuring + Llama chat commands
+- `src-tauri/src/commands/template_commands.rs` - Template extraction and DOCX rendering
 - `src-tauri/src/commands/style_profile_commands.rs` - StyleProfile management
 - `src-tauri/src/commands/docx_commands.rs` - DOCX analysis commands
 
 ### **Python Scripts**
 - `whisper_transcribe_tauri.py` - Whisper transcription script
-- `llama_grammar_correct.py` - Two-step pipeline with guardrails (UPDATED)
+- `qwen_structurer.py` - Qwen structuring (assigns content to template slots)
+- `llama_worker.py` - Llama worker for chat-based text revision
+- `template_extractor.py` - Extracts template from example Gutachten
+- `docx_renderer.py` - Renders DOCX from template + structured content
 - `style_profile_analyzer.py` - StyleProfile extraction from example documents
 
 ### **Python Virtual Environments**
 - `whisper_venv/` - Whisper transcription (Python 3.13)
-- `llama_venv_gpu/` - Llama grammar correction (llama-cpp-python)
+- `llama_venv_gpu/` - Qwen/Llama inference (llama-cpp-python)
+
+### **Models Directory**
+- `models/qwen2.5-7b-instruct-q4_k_m.gguf` - Qwen for structuring (~4.4GB)
+- `models/llama-3.2-3b-instruct-q4_k_m.gguf` - Llama for chat (~2GB)
 
 ---
 
@@ -251,8 +258,14 @@ npm run tauri:dev
 
 ### **Test Python Scripts Directly**
 ```bash
-# Test grammar correction
-llama_venv_gpu\Scripts\python.exe llama_grammar_correct.py test_input.txt
+# Test Qwen structuring
+llama_venv_gpu\Scripts\python.exe qwen_structurer.py
+
+# Test template extraction
+llama_venv_gpu\Scripts\python.exe template_extractor.py <input_folder> <output_folder>
+
+# Test DOCX rendering
+llama_venv_gpu\Scripts\python.exe docx_renderer.py --test
 
 # Test Whisper transcription
 whisper_venv\Scripts\python.exe whisper_transcribe_tauri.py audio.wav
@@ -262,23 +275,20 @@ whisper_venv\Scripts\python.exe whisper_transcribe_tauri.py audio.wav
 
 ## ⚠️ **CRITICAL LESSONS LEARNED**
 
-### **LLM Hallucination Prevention**
+### **LLM Role Separation**
 **Problem:** When asked to both correct AND format, LLM switches from "copy editor" mode to "author" mode and invents content.
 
-**Solution:**
-1. LLM does ONLY copy-editing (spelling, grammar, punctuation)
-2. Template insertion happens in app code (deterministic)
-3. Guardrails check output similarity, length, banned phrases
-4. Retries with lower temperature if guardrails fail
+**Solution:** Qwen's role is strictly defined:
+1. Qwen assigns content to predefined template slots
+2. It does NOT generate new content or restructure
+3. Unclear parts are marked with `{unclear:...}` for human review
+4. DOCX rendering is fully deterministic (no LLM involvement)
 
-### **Guardrails Are Essential**
-Without guardrails, the LLM will:
-- Add "Zusammenfassend..." summaries that don't exist
-- Invent medical findings
-- Restructure the entire text
-- Create a "proper" Gutachten from scratch
-
-With guardrails, outputs are forced to be minimal corrections only.
+### **Template-First Approach**
+The template system ensures consistency:
+- Template is extracted once from user's examples
+- Every new dictation follows the same structure
+- LLM cannot deviate from the learned template
 
 ---
 
@@ -305,15 +315,16 @@ With guardrails, outputs are forced to be minimal corrections only.
 | Audio Recording | ✅ Complete | Live mic + file upload |
 | Whisper Transcription | ✅ Complete | German medical optimized |
 | Dictation Commands | ✅ Complete | Regex-based, deterministic |
-| Grammar Correction | ✅ Complete | Two-step + guardrails |
-| Guardrails | ✅ Complete | 5 checks + retry logic |
-| StyleProfile | ✅ Complete | Section extraction only |
+| Template Extraction | ✅ Complete | template_extractor.py |
+| Qwen Structuring | ✅ Complete | qwen_structurer.py |
+| DOCX Rendering | ✅ Complete | docx_renderer.py |
+| Chat Revision | ✅ Complete | Llama 3.2 3B for text edits |
 | First-Launch Onboarding | ✅ Complete | Example collection |
-| DOCX Template Insertion | 📋 Planned | Deterministic, not LLM |
+| Onboarding + Template | 📋 In Progress | Integrate template extraction |
 | OCR | 📋 Planned | Tesseract integration |
 | Medical NER | 📋 Planned | spaCy + GERNERMED++ |
 
-**Overall Progress:** ~85% complete for core dictation workflow
+**Overall Progress:** ~90% complete for core dictation workflow
 
 ---
 

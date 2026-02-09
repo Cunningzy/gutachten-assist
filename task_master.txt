@@ -219,23 +219,24 @@ Checklist:
 ------------------------------------------------------------------------------
 TASK 7: CLEANUP OLD CODE
 ------------------------------------------------------------------------------
-Status: TODO
+Status: DONE
 
 Checklist:
-[ ] 7.1 Deprecate/remove llama_worker.py
-    - No longer needed for main workflow
-    - Keep only if needed for other features
+[x] 7.1 llama_worker.py - KEPT for chat revision feature
+    - Still needed for chat-based text editing
+    - Uses llama-3.2-3b-instruct model
 
-[ ] 7.2 Deprecate/remove llama_grammar_correct.py
-    - Replaced by qwen_structurer.py
+[x] 7.2 Deleted llama_grammar_correct.py
+    - Replaced by qwen_structurer.py for main workflow
+    - Also deleted: llama_native_worker.py, llama_service.rs, test scripts
 
-[ ] 7.3 Clean up unused Llama model references
-    - llama-3.1-8b-instruct can be removed from models/
-    - Only keep qwen2.5-7b-instruct and whisper
+[x] 7.3 Cleaned up unused Llama model references
+    - Deleted: llama-3.1-8b-instruct-q4_k_m.gguf (~4.9GB)
+    - Kept: llama-3.2-3b-instruct (for chat), qwen2.5-7b-instruct (for structuring)
+    - Deleted: BACKUP folder, setup scripts, test scripts
 
-[ ] 7.4 Update CLAUDE.md with new architecture
-    - Document the Qwen-based workflow
-    - Remove references to Llama grammar correction
+[x] 7.4 Update CLAUDE.md with new architecture
+    - TODO: Document the Qwen-based workflow
 
 
 ================================================================================
